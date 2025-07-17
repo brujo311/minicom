@@ -1,0 +1,4 @@
+/home/brujo/Documents/Coding/AVR 2025/Minicom4/build/CMakeFiles/MINICOM4.elf.dir
+/home/brujo/Documents/Coding/AVR 2025/Minicom4/build/CMakeFiles/flash.dir
+/home/brujo/Documents/Coding/AVR 2025/Minicom4/build/CMakeFiles/edit_cache.dir
+/home/brujo/Documents/Coding/AVR 2025/Minicom4/build/CMakeFiles/rebuild_cache.dir

@@ -1,4 +1,9 @@
 
+EEPROM stored settings
+
+LCD Settings
+
+Start address 0x000
 
 Console Settings
 

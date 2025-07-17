@@ -1,0 +1,1 @@
+avr-gcc -mmcu=atxmega128a3u -DF_CPU=32000000UL -Os -Wall CMakeFiles/MINICOM4.elf.dir/src/fonts.c.o CMakeFiles/MINICOM4.elf.dir/src/lcd_driver.c.o CMakeFiles/MINICOM4.elf.dir/src/main.c.o CMakeFiles/MINICOM4.elf.dir/src/ningen_ui.c.o CMakeFiles/MINICOM4.elf.dir/src/nvm_driver.c.o CMakeFiles/MINICOM4.elf.dir/src/strings.c.o -o MINICOM4.elf

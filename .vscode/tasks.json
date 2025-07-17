@@ -1,0 +1,209 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Just Build",
+      "type": "shell",
+      "command": "cd build && cmake .. && cmake --build .",
+      "group": "build"
+    },
+    {
+      "label": "Build and Program",
+      "type": "shell",
+      "command": "cmake --build build --target flash",
+      "group": "build"
+    }
+  ]
+}
+
+/*
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build AVR Project",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "fonts.c",
+                "-o",
+                "salida6.o"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile strings.c",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "strings.c",
+                "-o",
+                "salida5.o"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile nvm_driver.c",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "nvm_driver.c",
+                "-o",
+                "salida2.o"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile lcd_driver.c",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "lcd_driver.c",
+                "-o",
+                "salida3.o"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile fonts.c",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "fonts.c",
+                "-o",
+                "salida4.o"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Compile main.c",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "-c",
+                "main.c",
+                "-o",
+                "salida1.o"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Link Objects",
+            "type": "shell",
+            "command": "avr-gcc",
+            "args": [
+                "-mmcu=atxmega128a3u",
+                "-Os",
+                "-Wl,--section-start=.calibration_data=0x22000",
+                "salida1.o",
+                "salida2.o",
+                "salida3.o",
+                "salida4.o",
+                "salida5.o",
+                "salida6.o",
+                //"salida7.o",
+                //"salida8.o",
+                //"salida9.o",
+                //"salida10.o",
+                "-o",
+                "poronga.elf"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Create HEX",
+            "type": "shell",
+            "command": "avr-objcopy",
+            "args": [
+                "-j", ".text",
+                "-j", ".data",
+                "-j", ".bootloader",
+                "-j", ".calibration_data",
+                "-O", "ihex",
+                "poronga.elf",
+                "salida.hex"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Program MCU",
+            "type": "shell",
+            "command": "avrdude",
+            "args": [
+                "-p", "x128a3u",
+                "-c", "avrispmkii",
+                "-e",
+                "-U", "flash:w:salida.hex"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Reset MCU",
+            "type": "shell",
+            "command": "avrdude",
+            "args": [
+                "-p", "x128a3u",
+                "-c", "avrispmkii"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Just Build",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Compile strings.c"
+                "Compile nvm_driver.c",
+                "Compile fonts.c",
+                "Compile lcd_driver.c",
+                "Compile main.c",
+                "Link Objects",
+                "Create HEX"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Build and Program",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Just Build",
+                "Program MCU"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": []
+        }
+    ]
+}*/
