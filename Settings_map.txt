@@ -1,0 +1,7 @@
+
+
+Console Settings
+
+Start address 0x200
+1. Console keypad size (data type : 0x200 8bit DEC, setting : 0x201 default 30)
+

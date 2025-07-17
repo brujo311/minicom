@@ -1,0 +1,20 @@
+Pinout del ATXmega128a3u
+
+NRF24L01
+
+CE -> Pin 51 (PF5)
+CSN -> Pin 46 (PF0)
+IRQ -> Pin 50 (PF4)
+
+SD card
+
+CS -> Pin 47 (PF1)
+
+Bluetooth
+
+TxD -> Pin 48 (RXD0)
+RxD -> Pin 49 (TXD0)
+PWR -> Pin 31 (PD5) -> PnP
+
+USB
+PD6, PD7 32, 33
