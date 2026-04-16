@@ -35,9 +35,34 @@ uint8_t ui_active_form = 0;
 uint8_t **ui_list_contents;
 uint8_t **ui_text_contents;
 
+static uint16_t ui_strlen_P_u8(const uint8_t *p)
+{
+    uint16_t len = 0;
+    while (pgm_read_byte(&p[len]) != '\0') len++;
+    return len;
+}
 
-// Define buttons in PROGMEM
-const ui_static_control form1_controls[] PROGMEM = {
+static uint8_t *ui_strdup_P_u8(const uint8_t *p)
+{
+    uint16_t len = ui_strlen_P_u8(p);
+    uint8_t *out = (uint8_t *)malloc((size_t)len + 1);
+    if (!out) return NULL;
+    for (uint16_t i = 0; i <= len; i++) out[i] = pgm_read_byte(&p[i]);
+    return out;
+}
+
+// Form 1 default strings in flash (far addressable).
+static const uint8_t ui_form1_btn0_text[] = "Special 1";
+static const uint8_t ui_form1_btn1_text[] = "Command 1";
+static const uint8_t ui_form1_label_text[] = "Label 1";
+static const uint8_t ui_form1_textbox_text[] = "Text 1";
+static const uint8_t ui_form1_chk_text[] = "Check Box 1";
+static const uint8_t ui_form1_list_text[] =
+    "Item 1\nElement 2\nMy dick\nChupame esta con ganas hijo de puta\nItem 5\nPoronga\nItem 7\nDe lunes a lunes\nLa que esta buena\nItem 10\nHayan\nItem 12";
+static const uint8_t ui_form1_title[] = "Form 1";
+
+// Define buttons
+const ui_static_control form1_controls[] = {
     {
         .pos_x = 100, .pos_y = 40,
         .size_x = 80, .size_y = 30,
@@ -53,7 +78,7 @@ const ui_static_control form1_controls[] PROGMEM = {
         .text_size = 1,
         .thickness = 1,
         .ctrl_type = CmdButton,
-        .text = "Special 1"
+        .text = ui_form1_btn0_text
         //.callback = button1_callback
     },
     {
@@ -71,7 +96,7 @@ const ui_static_control form1_controls[] PROGMEM = {
         .text_size = 1,
         .thickness = 1,
         .ctrl_type = CmdButton | UseSystemColors,
-        .text = "Command 1"
+        .text = ui_form1_btn1_text
         //.callback = button1_callback
     },
     {
@@ -89,7 +114,7 @@ const ui_static_control form1_controls[] PROGMEM = {
         .text_size = 1,
         .thickness = 1,
         .ctrl_type = Label | UseSystemColors,
-        .text = "Label 1"
+        .text = ui_form1_label_text
         //.callback = button1_callback
     },
     {
@@ -107,7 +132,7 @@ const ui_static_control form1_controls[] PROGMEM = {
         .text_size = 1,
         .thickness = 1,
         .ctrl_type = TextBox | UseSystemColors,
-        .text = "Text 1"
+        .text = ui_form1_textbox_text
         //.callback = button1_callback
     },
     {
@@ -125,7 +150,7 @@ const ui_static_control form1_controls[] PROGMEM = {
         .text_size = 1,
         .thickness = 2,
         .ctrl_type = CheckBox | UseSystemColors,
-        .text = "Check Box 1"
+        .text = ui_form1_chk_text
         //.callback = button1_callback
     },
     {
@@ -144,14 +169,14 @@ const ui_static_control form1_controls[] PROGMEM = {
         .thickness = 1,
         .ctrl_type = StaticListBox | UseSystemColors,
         //.text = "Item 1\nItem 2\nItem 3\nItem 4"
-        .text = "Item 1\nElement 2\nMy dick\nChupame esta con ganas shijo de puta\nItem 5\nPoronga\nItem 7\nDe lunes a lunes\nLa que esta buena\nItem 10\nHayan\nItem 12"
+        .text = ui_form1_list_text
         //.callback = button1_callback
     },
     // Add more buttons as needed
 };
 
 // Modified forms array with buttons
-const ui_static_form forms[] PROGMEM = {
+const ui_static_form forms[] = {
     {
         .pos_x = 10, .pos_y = 20,
         .size_x = 300, .size_y = 250,
@@ -161,7 +186,7 @@ const ui_static_form forms[] PROGMEM = {
         .text_size = 3,
         .thickness = 2,
         .ctrl_type = TitleClose,
-        .title = "Form 1",
+        .title = ui_form1_title,
         .num_controls = 6,
         .controls = form1_controls,
     },
@@ -237,39 +262,39 @@ void ui_draw_form(uint8_t form_index)
 {
     const ui_static_form *form = &forms[form_index];
 
-    uint16_t x = pgm_read_word(&form->pos_x);
-    uint16_t y = pgm_read_word(&form->pos_y);
-    uint16_t width = pgm_read_word(&form->size_x);
-    uint16_t height = pgm_read_word(&form->size_y);
-    uint16_t back_color = pgm_read_word(&form->back_color);
-    const uint8_t *title = (const uint8_t*)pgm_read_word(&form->title);
+    uint16_t x = form->pos_x;
+    uint16_t y = form->pos_y;
+    uint16_t width = form->size_x;
+    uint16_t height = form->size_y;
+    uint16_t back_color = form->back_color;
+    const uint8_t *title = form->title;
     uint8_t char_width, char_height;
 
     text_box_count = 0; list_control_count = 0;
 
     lcd_draw_window(x, x + width, y, y + height, back_color);
 
-    for(uint8_t a = 0; a < pgm_read_byte(&form->thickness); a++)
+    for(uint8_t a = 0; a < form->thickness; a++)
     {
-        lcd_draw_line_x(x, x + width, y + a, pgm_read_word(&form->border_color));
-        lcd_draw_line_x(x, x + width, y + height - a, pgm_read_word(&form->border_color));
-        lcd_draw_line_y(x + a, y, y + height, pgm_read_word(&form->border_color));
-        lcd_draw_line_y(x + width - a, y, y + height, pgm_read_word(&form->border_color));
+        lcd_draw_line_x(x, x + width, y + a, form->border_color);
+        lcd_draw_line_x(x, x + width, y + height - a, form->border_color);
+        lcd_draw_line_y(x + a, y, y + height, form->border_color);
+        lcd_draw_line_y(x + width - a, y, y + height, form->border_color);
     }
 
-    lcd_get_char_size('A', pgm_read_byte(&form->text_size), &char_width, &char_height);
+    lcd_get_char_size('A', form->text_size, &char_width, &char_height);
 
-    if(pgm_read_byte(&form->ctrl_type) != NoControlBox)
+    if(form->ctrl_type != NoControlBox)
     {
-        lcd_draw_window(x + pgm_read_byte(&form->thickness), x + width - pgm_read_byte(&form->thickness), y + pgm_read_byte(&form->thickness), y + pgm_read_byte(&form->thickness) + 9 + char_height, BLACK);
-        ui_write(x + 5 + pgm_read_byte(&form->thickness),  y + 5 + pgm_read_byte(&form->thickness), title, pgm_read_byte(&form->text_color), pgm_read_byte(&form->text_size));
+        lcd_draw_window(x + form->thickness, x + width - form->thickness, y + form->thickness, y + form->thickness + 9 + char_height, BLACK);
+        ui_write(x + 5 + form->thickness,  y + 5 + form->thickness, title, form->text_color, form->text_size);
 
-        for(uint8_t a = 0; a < pgm_read_byte(&form->thickness); a++)
-            lcd_draw_line_x(x, x + width, y + pgm_read_byte(&form->thickness) + 9 + char_height + a, pgm_read_word(&form->border_color));
+        for(uint8_t a = 0; a < form->thickness; a++)
+            lcd_draw_line_x(x, x + width, y + form->thickness + 9 + char_height + a, form->border_color);
     }
 
     // Draw elements
-    uint8_t num_controls = pgm_read_byte(&form->num_controls);
+    uint8_t num_controls = form->num_controls;
 
     // Allocate control memory
     if(ui_active_form != form_index + 1)
@@ -290,9 +315,10 @@ void ui_draw_form(uint8_t form_index)
             ui_control_alias[a] = 0;
             ui_control_status[a] = CtrlNormal;
 
-            const ui_static_control *ui_static_controls = (const ui_static_control*)pgm_read_word(&form->controls);
+            const ui_static_control *ui_static_controls = form->controls;
             const ui_static_control *static_ctrl = &ui_static_controls[a];
-            uint8_t ctrl_type = pgm_read_byte(&static_ctrl->ctrl_type);
+            uint8_t ctrl_type = static_ctrl->ctrl_type;
+            ctrl_type &= ~(UseSystemColors);
 
             if(ctrl_type == TextBox) { ui_control_alias[a] = text_box_count; text_box_count++; }
             if(ctrl_type == StaticListBox) { ui_control_alias[a] = list_control_count; list_control_count++; }
@@ -309,7 +335,7 @@ void ui_draw_form(uint8_t form_index)
         if(!ui_list_contents) return;
 
         if(list_start_index) { free(list_start_index); }
-        list_start_index = (uint8_t *)malloc(list_control_count * sizeof(uint8_t *));
+        list_start_index = (uint8_t *)malloc(list_control_count * sizeof(uint8_t));
         if(!list_start_index) return;
 
         for(uint8_t i = 0; i < list_control_count; i++) { ui_list_contents[i] = NULL; list_start_index[i] = 0; }
@@ -317,7 +343,7 @@ void ui_draw_form(uint8_t form_index)
 
     for(uint8_t i = 0; i < num_controls; i++)
     {
-        if(pgm_read_byte(&form->ctrl_type) == TitleClose && i == 0) ui_draw_control(form_index, i);
+        if(form->ctrl_type == TitleClose && i == 0) ui_draw_control(form_index, i);
         if(i > 0) ui_draw_control(form_index, i);
     }
 
@@ -327,24 +353,24 @@ void ui_draw_form(uint8_t form_index)
 void ui_draw_control(uint8_t form_index, uint8_t control_index)
 {
     const ui_static_form *form = &forms[form_index];
-    const ui_static_control *ui_static_controls = (const ui_static_control*)pgm_read_word(&form->controls);
+    const ui_static_control *ui_static_controls = form->controls;
     const ui_static_control *static_ctrl = &ui_static_controls[control_index];
 
     uint8_t a = 0;
     uint8_t char_width = 0, char_height = 0;
-    uint16_t pos_x = pgm_read_word(&form->pos_x) + pgm_read_word(&static_ctrl->pos_x);
-    uint16_t pos_y = pgm_read_word(&form->pos_y) + pgm_read_word(&static_ctrl->pos_y);
-    uint16_t size_x = pgm_read_word(&static_ctrl->size_x);
-    uint16_t size_y = pgm_read_word(&static_ctrl->size_y);
-    uint16_t back_color;
-    uint16_t text_color;
-    uint16_t border_color;
-    uint8_t text_size = pgm_read_byte(&static_ctrl->text_size);
-    uint8_t thickness = pgm_read_byte(&static_ctrl->thickness);
-    uint8_t ctrl_type = pgm_read_byte(&static_ctrl->ctrl_type);
+    uint16_t pos_x = form->pos_x + static_ctrl->pos_x;
+    uint16_t pos_y = form->pos_y + static_ctrl->pos_y;
+    uint16_t size_x = static_ctrl->size_x;
+    uint16_t size_y = static_ctrl->size_y;
+    uint16_t back_color = color_form_back;
+    uint16_t text_color = color_text;
+    uint16_t border_color = color_border;
+    uint8_t text_size = static_ctrl->text_size;
+    uint8_t thickness = static_ctrl->thickness;
+    uint8_t ctrl_type = static_ctrl->ctrl_type;
     uint8_t use_system_colors = ctrl_type & UseSystemColors;
     ctrl_type &= ~(UseSystemColors);  // Clear the system colors flag to get actual control type
-    const uint8_t *caption = (const uint8_t*)pgm_read_word(&static_ctrl->text);
+    const uint8_t *caption = static_ctrl->text;
 
     if(ui_control_status[control_index] == CtrlNormal)
     {
@@ -356,9 +382,9 @@ void ui_draw_control(uint8_t form_index, uint8_t control_index)
             text_color = color_text;
             border_color = color_border;
         } else {
-            back_color = pgm_read_word(&static_ctrl->back_color);
-            text_color = pgm_read_word(&static_ctrl->text_color);
-            border_color = pgm_read_word(&static_ctrl->border_color);
+            back_color = static_ctrl->back_color;
+            text_color = static_ctrl->text_color;
+            border_color = static_ctrl->border_color;
         }
     }
     if(ui_control_status[control_index] == CtrlSelected)
@@ -370,9 +396,9 @@ void ui_draw_control(uint8_t form_index, uint8_t control_index)
             text_color = color_text_selected;
             border_color = color_border_selected;
         } else {
-            back_color = pgm_read_word(&static_ctrl->back_color_sel);
-            text_color = pgm_read_word(&static_ctrl->text_color_sel);
-            border_color = pgm_read_word(&static_ctrl->border_color_sel);
+            back_color = static_ctrl->back_color_sel;
+            text_color = static_ctrl->text_color_sel;
+            border_color = static_ctrl->border_color_sel;
         }
         if(ctrl_type == CmdButton) thickness++;
     }
@@ -383,9 +409,9 @@ void ui_draw_control(uint8_t form_index, uint8_t control_index)
             text_color = color_text_disabled;
             border_color = color_border_disabled;
         } else {
-            back_color = pgm_read_word(&static_ctrl->back_color_dis);
-            text_color = pgm_read_word(&static_ctrl->text_color_dis);
-            border_color = pgm_read_word(&static_ctrl->border_color_dis);
+            back_color = static_ctrl->back_color_dis;
+            text_color = static_ctrl->text_color_dis;
+            border_color = static_ctrl->border_color_dis;
         }
     }
 
@@ -432,7 +458,7 @@ void ui_draw_control(uint8_t form_index, uint8_t control_index)
 void ui_draw_list_box(uint8_t form_index, uint8_t control_index, const uint8_t *dynamic_content)
 {
     const ui_static_form *form = &forms[form_index];
-    const ui_static_control *ui_static_controls = (const ui_static_control*)pgm_read_word(&form->controls);
+    const ui_static_control *ui_static_controls = form->controls;
     const ui_static_control *static_ctrl = &ui_static_controls[control_index];
     const uint8_t *content_to_use = NULL;
     uint8_t alias_index = ui_control_alias[control_index];
@@ -485,31 +511,30 @@ void ui_draw_list_box(uint8_t form_index, uint8_t control_index, const uint8_t *
         content_to_use = dynamic_content;
     }
     else {
-        // Scenario 4: Both NULL, load from PROGMEM
-        content_to_use = (const uint8_t*)pgm_read_word(&static_ctrl->text);
-        // Calculate length of PROGMEM content
+        // Scenario 4: Both NULL, load default caption into RAM
         uint16_t prog_len = 0;
-        while(content_to_use[prog_len++] != '\0') ;
-        prog_len++;
+        const uint8_t *content = static_ctrl->text;
+        while(content[prog_len++] != '\0') ;
         ui_list_contents[alias_index] = (uint8_t*)malloc(prog_len);
         if (ui_list_contents[alias_index] != NULL) {
-            memcpy(ui_list_contents[alias_index], content_to_use, prog_len);
+            memcpy(ui_list_contents[alias_index], content, prog_len);
         }
+        content_to_use = ui_list_contents[alias_index];
     }
 
     // Continue with the existing drawing code, but use content_to_use instead of caption
     uint8_t a = 0, total_elements = 0;
     uint8_t char_width = 0, char_height = 0;
-    uint16_t pos_x = pgm_read_word(&form->pos_x) + pgm_read_word(&static_ctrl->pos_x);
-    uint16_t pos_y = pgm_read_word(&form->pos_y) + pgm_read_word(&static_ctrl->pos_y);
-    uint16_t size_x = pgm_read_word(&static_ctrl->size_x);
-    uint16_t size_y = pgm_read_word(&static_ctrl->size_y);
+    uint16_t pos_x = form->pos_x + static_ctrl->pos_x;
+    uint16_t pos_y = form->pos_y + static_ctrl->pos_y;
+    uint16_t size_x = static_ctrl->size_x;
+    uint16_t size_y = static_ctrl->size_y;
     uint16_t back_color, text_color, border_color, selected_color;
-    uint8_t text_size = pgm_read_byte(&static_ctrl->text_size);
-    uint8_t thickness = pgm_read_byte(&static_ctrl->thickness);
+    uint8_t text_size = static_ctrl->text_size;
+    uint8_t thickness = static_ctrl->thickness;
 
     // Get control type and system colors flag
-    uint8_t ctrl_type = pgm_read_byte(&static_ctrl->ctrl_type);
+    uint8_t ctrl_type = static_ctrl->ctrl_type;
     uint8_t use_system_colors = ctrl_type & UseSystemColors;
     ctrl_type &= ~(UseSystemColors);
     if(ctrl_type != StaticListBox) return;
@@ -553,9 +578,9 @@ void ui_draw_list_box(uint8_t form_index, uint8_t control_index, const uint8_t *
     }
     else
     {
-        back_color = pgm_read_word(&static_ctrl->back_color);
-        text_color = pgm_read_word(&static_ctrl->text_color);
-        border_color = pgm_read_word(&static_ctrl->border_color);
+        back_color = static_ctrl->back_color;
+        text_color = static_ctrl->text_color;
+        border_color = static_ctrl->border_color;
         selected_color = color_list_selected;  // Always use system color for selection highlight
     }
 
@@ -693,38 +718,33 @@ void ui_draw_list_box(uint8_t form_index, uint8_t control_index, const uint8_t *
 void ui_text_update(uint8_t form_index, uint8_t control_index, const uint8_t *new_text)
 {
     const ui_static_form *form = &forms[form_index];
-    const ui_static_control *ui_static_controls = (const ui_static_control*)pgm_read_word(&form->controls);
+    const ui_static_control *ui_static_controls = form->controls;
     const ui_static_control *static_ctrl = &ui_static_controls[control_index];
     uint8_t char_width = 0, char_height = 0;
-    uint16_t pos_x = pgm_read_word(&form->pos_x) + pgm_read_word(&static_ctrl->pos_x);
-    uint16_t pos_y = pgm_read_word(&form->pos_y) + pgm_read_word(&static_ctrl->pos_y);
-    uint16_t size_x = pgm_read_word(&static_ctrl->size_x);
-    uint16_t size_y = pgm_read_word(&static_ctrl->size_y);
+    uint16_t pos_x = form->pos_x + static_ctrl->pos_x;
+    uint16_t pos_y = form->pos_y + static_ctrl->pos_y;
+    uint16_t size_x = static_ctrl->size_x;
+    uint16_t size_y = static_ctrl->size_y;
     uint16_t back_color, text_color, border_color;
-    uint8_t text_size = pgm_read_byte(&static_ctrl->text_size);
-    uint8_t thickness = pgm_read_byte(&static_ctrl->thickness);
-    uint8_t ctrl_type = pgm_read_byte(&static_ctrl->ctrl_type);
+    uint8_t text_size = static_ctrl->text_size;
+    uint8_t thickness = static_ctrl->thickness;
+    uint8_t ctrl_type = static_ctrl->ctrl_type;
     uint8_t use_system_colors = ctrl_type & UseSystemColors;
 
     if((ctrl_type & 0x7F) != TextBox) return;
 
-    const uint8_t *caption = (const uint8_t*)pgm_read_word(&static_ctrl->text);
+    const uint8_t *caption = static_ctrl->text;
     uint8_t text_box_index = ui_control_alias[control_index];
 
     // Case 4 both are NULL, use caption
     if (new_text == NULL && (ui_text_contents[text_box_index] == NULL ||
         ui_text_contents[text_box_index][0] == '\0')) {
-        // Get caption length
         uint8_t len = 0;
-        while (pgm_read_byte(&caption[len]) != '\0') len++;
-
-        // Allocate and store caption
-        ui_text_contents[text_box_index] = (uint8_t*)malloc(len + 1);
+        while (caption[len] != '\0') len++;
+        ui_text_contents[text_box_index] = (uint8_t*)malloc((size_t)len + 1);
         if (ui_text_contents[text_box_index] != NULL) {
-            ui_text_contents[text_box_index] = (uint8_t *)caption;
-            ui_text_contents[text_box_index][len] = '\0';
+            memcpy(ui_text_contents[text_box_index], caption, (size_t)len + 1);
         }
-        new_text = NULL;  // Force using ui_text_contents path
     }
 
     // Determine colors
@@ -733,9 +753,9 @@ void ui_text_update(uint8_t form_index, uint8_t control_index, const uint8_t *ne
         text_color = color_text;
         border_color = color_border;
     } else {
-        back_color = pgm_read_word(&static_ctrl->back_color);
-        text_color = pgm_read_word(&static_ctrl->text_color);
-        border_color = pgm_read_word(&static_ctrl->border_color);
+        back_color = static_ctrl->back_color;
+        text_color = static_ctrl->text_color;
+        border_color = static_ctrl->border_color;
     }
 
     lcd_get_char_size('A', text_size, &char_width, &char_height);
@@ -824,10 +844,10 @@ uint8_t ui_handle_touch()
     if(!ui_active_form) return 0; // No active form
 
     const ui_static_form *form = &forms[ui_active_form - 1]; // Active for 0 for none
-    uint16_t form_x = pgm_read_word(&form->pos_x);
-    uint16_t form_y = pgm_read_word(&form->pos_y);
-    uint8_t num_static_ctrls = pgm_read_byte(&form->num_controls);
-    const ui_static_control *ui_static_controls = (const ui_static_control*)pgm_read_word(&form->controls);
+    uint16_t form_x = form->pos_x;
+    uint16_t form_y = form->pos_y;
+    uint8_t num_static_ctrls = form->num_controls;
+    const ui_static_control *ui_static_controls = form->controls;
 
     uint8_t ui_check_cursor_index(uint16_t form_pos_x, uint16_t form_pos_y, uint16_t ctrl_pos_x, uint16_t ctrl_pos_y, uint16_t ctrl_width, uint16_t ctrl_height)
     {
@@ -839,16 +859,17 @@ uint8_t ui_handle_touch()
 
     if (touch_sense())
     {
+        uint8_t i;
         touch_refresh();
 
         // Check basic controls
-        for (uint8_t i = 0; i < num_static_ctrls; i++) {
-            const ui_static_control *static_ctrl = &form1_controls[i];
-            uint16_t ctrl_x = pgm_read_word(&static_ctrl->pos_x);
-            uint16_t ctrl_y = pgm_read_word(&static_ctrl->pos_y);
-            uint16_t ctrl_width = pgm_read_word(&static_ctrl->size_x);
-            uint16_t ctrl_height = pgm_read_word(&static_ctrl->size_y);
-            uint8_t ctrl_type = pgm_read_byte(&static_ctrl->ctrl_type) & (~(UseSystemColors)); // Remove use system colors flag
+        for (i = 0; i < num_static_ctrls; i++) {
+            const ui_static_control *static_ctrl = &ui_static_controls[i];
+            uint16_t ctrl_x = static_ctrl->pos_x;
+            uint16_t ctrl_y = static_ctrl->pos_y;
+            uint16_t ctrl_width = static_ctrl->size_x;
+            uint16_t ctrl_height = static_ctrl->size_y;
+            uint8_t ctrl_type = static_ctrl->ctrl_type & (~(UseSystemColors)); // Remove use system colors flag
 
             if (ui_check_cursor_index(form_x, form_y, ctrl_x, ctrl_y, ctrl_width, ctrl_height))
             {
@@ -860,7 +881,7 @@ uint8_t ui_handle_touch()
                     touch_wait_release();
                     ui_control_status[i] = CtrlNormal;
                     ui_draw_control(ui_active_form - 1, i);
-                    if(i == 0 && (pgm_read_byte(&form->ctrl_type) == TitleClose)) // Form close button
+                    if(i == 0 && (form->ctrl_type == TitleClose)) // Form close button
                         ui_form_unload();
                     return i + 1;
                 }
@@ -877,10 +898,10 @@ uint8_t ui_handle_touch()
                 {
                     // Calculate character dimensions and item heights like in draw function
                     uint8_t char_width = 0, char_height = 0;
-                    uint8_t text_size = pgm_read_byte(&static_ctrl->text_size);
+                    uint8_t text_size = static_ctrl->text_size;
                     lcd_get_char_size('A', text_size, &char_width, &char_height);
                     uint16_t item_height = char_height + 6;  // Same spacing as in draw function
-                    uint8_t thickness = pgm_read_byte(&static_ctrl->thickness);
+                    uint8_t thickness = static_ctrl->thickness;
 
                     // Calculate scroll button areas
                     uint16_t abs_x = form_x + ctrl_x;
@@ -913,8 +934,8 @@ uint8_t ui_handle_touch()
                         // Count total elements from current content
                         const uint8_t *content = ui_list_contents[alias_index];
                         if(!content) {
-                            // If no dynamic content, use PROGMEM content
-                            content = (const uint8_t*)pgm_read_word(&static_ctrl->text);
+                            // If no dynamic content, use default caption
+                            content = static_ctrl->text;
                         }
 
                         // Count elements by counting newlines

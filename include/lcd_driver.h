@@ -4,11 +4,7 @@
 //#define MCU_PAGE_SIZE 256 // WORDS
 
 // PINOUT
-#define SPI_DATA SPIE.DATA
-#define SPI_STATUS SPIE.STATUS
-#define SPI_IF (SPIE.STATUS & SPI_IF_bm)
-#define SPI_LCD_SET SPIE.CTRL = SPI_ENABLE_bm | SPI_MASTER_bm | SPI_MODE_0_gc | SPI_PRESCALER_DIV4_gc | 0x80
-#define SPI_TOUCH_SET SPIE.CTRL = SPI_ENABLE_bm | SPI_MASTER_bm | SPI_MODE_0_gc | SPI_PRESCALER_DIV16_gc | 0x80
+
 
 #define SPI_PORT PORTE_OUT
 #define SPI_DIR PORTE_DIR
@@ -36,11 +32,14 @@
 #define DDR_TOUCH_IRQ PORTE_DIR
 #define PIN_TOUCH_IRQ 0 //PIN1_bm
 
-uint16_t cursor_x;
-uint16_t cursor_y;
+extern uint16_t lcd_size_x;
+extern uint16_t lcd_size_y;
 
-uint16_t touch_samples;
-uint8_t touch_accuracy;
+extern uint16_t cursor_x;
+extern uint16_t cursor_y;
+
+extern uint16_t touch_samples;
+extern uint8_t touch_accuracy;
 
 void lcd_io();
 void lcd_spi_set(void);
@@ -51,11 +50,15 @@ void lcd_init_controller(void);
 void lcd_set_position(uint16_t x, uint16_t y);
 void lcd_draw_window(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1, uint16_t color);
 void lcd_draw_pixel(uint16_t x, uint16_t y, uint16_t color);
+void lcd_draw_pixel_24bit(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b);
 void lcd_draw_char(uint8_t character, uint16_t color, uint8_t size);
 void lcd_get_char_size(uint8_t chr, uint8_t type, uint8_t *size_x, uint8_t *size_y);
 void lcd_draw_string(uint8_t *str, uint16_t color, uint8_t size);
+void lcd_draw_string_f(const uint8_t *str, uint16_t color, uint8_t size);
 void lcd_draw_line_x(uint16_t xs, uint16_t xe, uint16_t y, uint16_t color);
 void lcd_draw_line_y(uint16_t x, uint16_t ys, uint16_t ye, uint16_t color);
+uint8_t lcd_set_window(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1);
+void lcd_send_565(uint16_t color);
 //void lcd_draw_line(uint16_t x1, uint16_t x2, uint16_t y1, uint16_t y2, uint16_t color);
 void lcd_draw_xy(uint16_t pos_x, uint16_t pos_y, uint16_t val_x, uint16_t val_y, uint16_t color_1, uint16_t color_2);
 void lcd_clear_screen(uint16_t color);

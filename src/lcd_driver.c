@@ -10,10 +10,12 @@
 #include <stdlib.h>
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/pgmspace.h>
 #include "lcd_driver.h"
 #include "fonts.h"
 #include "colors.h"
 #include "nvm_driver.h"
+#include "mcu_driver.h"
 
 /** @var array Chache memory char index row */
 uint16_t lcd_index_y = 0;
@@ -25,6 +27,9 @@ uint16_t lcd_index_x = 0;
 // COMMANDS IN EEPROM ADDRESS 0X0002
 /**/
 
+extern uint16_t lcd_size_x = 480;
+extern uint16_t lcd_size_y = 320;
+
 uint16_t touch_samples = 250;
 uint8_t touch_accuracy = 10;
 uint8_t cal_points = 4;
@@ -34,6 +39,9 @@ uint16_t *cal_point_y;
 
 uint16_t *cal_x;
 uint16_t *cal_y;
+
+uint16_t cursor_x = 0;
+uint16_t cursor_y = 0;
 
 // Optimized SPI send function for AVR
 static inline void lcd_spi_send(uint8_t data)
@@ -205,6 +213,14 @@ void lcd_init_controller(void)
 	load_touch_calibration();
 }
 
+static inline uint16_t _24bits_to_565(uint8_t r, uint8_t g, uint8_t b)
+{
+   return  (uint16_t)((r & 0xf8) << 5) |
+		   (uint16_t)((g & 0x1c) << 11) |
+		   (uint16_t)((g & 0xe0) >> 5) |
+		   (uint16_t)(b & 0xf8);
+}
+
 static inline void lcd_send_color_565(uint16_t color, uint32_t count)
 {
 	lcd_send_cmd(ILI9488_CMD_MEMORY_WRITE);
@@ -247,7 +263,7 @@ static uint8_t lcd_set_partial_area(uint16_t sRow, uint16_t eRow)
 	return 1;
 }
 
-static uint8_t lcd_set_window(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1)
+uint8_t lcd_set_window(uint16_t x0, uint16_t x1, uint16_t y0, uint16_t y1)
 {
     //uint16_t x0_be = __builtin_bswap16(x0);
     //uint16_t x1_be = __builtin_bswap16(x1);
@@ -334,6 +350,12 @@ void lcd_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 	lcd_send_color_565(color, 1);
 }
 
+void lcd_draw_pixel_24bit(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b)
+{
+	lcd_set_window(x, x, y, y);
+	lcd_send_color_565(_24bits_to_565(r, g, b), 1);
+}
+
 void lcd_draw_char(uint8_t character, uint16_t color, uint8_t size)
 {
     uint8_t data[90];
@@ -366,8 +388,25 @@ void lcd_get_char_size(uint8_t chr, uint8_t type, uint8_t *size_x, uint8_t *size
 void lcd_draw_string(uint8_t *str, uint16_t color, uint8_t size)
 {
 	uint8_t i = 0;
-	while (str[i] != '\0') {
+	while ((str[i] != '\0') && (str[i] != '\n') && (str[i] != '\r')) {
 		lcd_draw_char(str[i++], color, size);
+	}
+}
+
+void lcd_draw_string_f(const uint8_t *str, uint16_t color, uint8_t size)
+{
+	uint8_t i;
+	uint8_t a = 0;
+
+	while (1)
+	{
+		i = pgm_read_byte(str + a);
+
+		if ((i == '\0') || (i == '\n') || (i == '\r'))
+			break;
+
+		lcd_draw_char(i, color, size);
+		a++;
 	}
 }
 
@@ -427,7 +466,6 @@ void lcd_write_debug(uint8_t * d)
 	lcd_draw_window(0, 479, 320 - 8, 319, BLACK);
 	lcd_set_position(6, 320 - 8);
 	lcd_draw_string(d, RED, 1);
-	_delay_ms(1000); // DEBUG
 }
 
 void lcd_print_xy(uint16_t pos_x, uint16_t pos_y, uint16_t val_x, uint16_t val_y, uint16_t color)
@@ -485,6 +523,7 @@ uint8_t touch_sense()
 {
 	if(!(PORT_TOUCH_IRQ & (1 << PIN_TOUCH_IRQ))) return 1;
 	if((PORT_TOUCH_IRQ & (1 << PIN_TOUCH_IRQ))) return 0;
+    return 0;
 }
 
 void touch_wait_press()
@@ -534,11 +573,10 @@ static uint16_t accurate_average(uint16_t *data, uint16_t array_size, uint8_t ma
 
 uint16_t touch_get_raw(uint16_t *x, uint16_t *y)
 {
-	uint16_t *readback;
+	uint16_t *readback = NULL;
 	uint16_t a = 0;
 
-	if(readback) free(readback);
-	readback = (uint16_t *)malloc(touch_samples);
+	readback = (uint16_t *)malloc((size_t)touch_samples * sizeof(uint16_t));
 	if(!readback) return 0;
 
 	if(touch_accuracy < 10) touch_accuracy = 10;
@@ -773,6 +811,8 @@ uint8_t load_touch_calibration()
 			cal_y[index] |= eeprom_read_byte(addr++);
 		}
 	}
+
+    return 0;
 }
 
 void save_touch_calibration(uint16_t *cal_new_x, uint16_t *cal_new_y)

@@ -1,17 +1,18 @@
+#include <avr/pgmspace.h>
 
-uint16_t color_form_back;
-uint16_t color_border;
-uint16_t color_border_selected;
-uint16_t color_border_disabled;
-uint16_t color_text;
-uint16_t color_text_selected;
-uint16_t color_text_disabled;
-uint16_t color_form;
-uint16_t color_cmd_back;
-uint16_t color_cmd_disabled;
-uint16_t color_cmd_selected;
+extern uint16_t color_form_back;
+extern uint16_t color_border;
+extern uint16_t color_border_selected;
+extern uint16_t color_border_disabled;
+extern uint16_t color_text;
+extern uint16_t color_text_selected;
+extern uint16_t color_text_disabled;
+extern uint16_t color_form;
+extern uint16_t color_cmd_back;
+extern uint16_t color_cmd_disabled;
+extern uint16_t color_cmd_selected;
 
-uint8_t *ui_control_status;
+extern uint8_t *ui_control_status;
 
 // Command button structure definition
 typedef struct {

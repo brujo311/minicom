@@ -2,14 +2,20 @@
 
 #define YELLOW ~0x00f8
 #define MAGENTA ~0x8007
-#define CYAN ~0x7f00
-#define WHITE ~0x0000
+#define CYAN  ~0x7f00
+#define WHITE  0xffff
 #define VIOLET 0b0001110111101100
 #define ORCHID 0b1001101111011011
-#define BLACK ~0xffff
-#define RED ~0x80ff
-#define BLUE ~0xff07
-#define GREEN ~0x7ff8
+#define BLACK  0
+#define RED    0b0001111100000000 //~0x80ff 
+#define BLUE   0b0000000011111000 //~0xff07
+#define GREEN  0b1110000000000111 //~0x7ff8
+
+
+#define DARK_GRAY       0xffff // 0xC618
+#define LIGHT_GRAY      0xffff // 0x4208
+
+#define GRAY            0x8410
 
 #define GRAY1 0b0000010000100001
 #define GRAY2 0b0000100001000010

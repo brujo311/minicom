@@ -111,4 +111,5 @@ uint16_t eeprom_read_word(uint16_t address)
 {
     uint16_t data = (uint16_t)(eeprom_read_byte(address++) << 8);
     data |= eeprom_read_byte(address);
+    return data;
 }
