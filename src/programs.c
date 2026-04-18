@@ -211,7 +211,7 @@ void pgm_file_reader(uint8_t argc, uint8_t *argv[])
     // Display file content (simple text display)
     uint8_t line_buffer[64];
     uint16_t line_count = 0;
-    uint16_t max_lines = (lcd_size_y - title_bar_height * 2 - char_size_y) / char_size_y;
+    uint16_t max_lines = (lcd_size_y - (title_bar_height * 2) - (char_size_y * 2)) / char_size_y;
     uint16_t scroll_offset = 0;
     uint16_t current_line = 0;
     
@@ -243,7 +243,7 @@ void pgm_file_reader(uint8_t argc, uint8_t *argv[])
         
         if (byte == '\n' || byte == '\0') {
             char_buffer[char_index] = '\0';
-            if (current_y >= title_bar_height && current_y < lcd_size_y - char_size_y * 2) {
+            if (current_y >= title_bar_height && current_y < (lcd_size_y - (char_size_y * 2))) {
                 lcd_set_position(10, current_y);
                 lcd_draw_string(char_buffer, console_text_color, console_char_size);
                 display_lines++;

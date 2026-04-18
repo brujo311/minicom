@@ -837,7 +837,7 @@
      {
          /* Draw a filled block as cursor — invert colors at cursor cell */
          _cursor_x = (uint16_t)cursor_screen_col * char_size_x;
-         _cursor_y = (uint16_t)row * char_size_y;
+         _cursor_y = (uint16_t)row * char_size_y - 1;
  
          /* If there is a character under the cursor draw it in background color */
          if (console_input_index < ilen)
@@ -1602,8 +1602,9 @@
     console_write_f(PSTR_MEM10);
     console_write_f(PSTR_MEM4);
     FAT_get_volume_id(out);
+    out[11] = '\n';
+    out[12] = '\0';
     console_write_d(out);
-    console_write_d("\n");
  }
 
 
