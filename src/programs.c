@@ -122,7 +122,7 @@ void pgm_show_bitmap(uint8_t argc, uint8_t *argv[])
 
 static const char PSTR_FR1[]  PROGMEM = "file reader: usage: file_reader <filename>\n";
 static const char PSTR_FR2[]  PROGMEM = "file reader: file not found\n";
-static const char PSTR_FR3[]  PROGMEM = "file reader: file is too large (>32 KB)\n";
+static const char PSTR_FR3[]  PROGMEM = "file reader: file is too large (>32 KB)\n"; // Not used
 static const char PSTR_FR4[]  PROGMEM = "file reader: read error\n";
 static const char PSTR_FR5[]  PROGMEM = "File loading succeed\n";
 static const char PSTR_FR6[]  PROGMEM = "Press 'q' to exit the file viewer";
@@ -146,18 +146,16 @@ void pgm_file_reader(uint8_t argc, uint8_t *argv[])
        return;
     }
 
-    uint32_t ram_addr = (console_ram_start_addr + console_ram_buffer_size + 32768);
-    uint32_t max_file_size = 32768;
+    uint32_t ram_addr = ram_allocate(dir_entry.fileSize);
+    if(!ram_addr) { console_write_f(PSTR("Error allocating file in RAM, not enaugh memory\n")); return; }
+    console_write_f(PSTR("File allocated to RAM -> "));
+    console_number(dir_entry.fileSize, 10, NULL, " KB\n");
     
-    // Check if file is too large
-    if (dir_entry.fileSize > max_file_size) {
-        console_write_f(PSTR_FR3);
-        return;
-    }
     
     // Open the file
     if (!FAT_open_file(filename)) {
         console_write_f(PSTR_FR2); // "error opening file"
+        ram_free(ram_addr);
         return;
     }
     
@@ -172,6 +170,7 @@ void pgm_file_reader(uint8_t argc, uint8_t *argv[])
         if (!FAT_read_bytes(NULL, buffer, to_read)) {
             console_write_f(PSTR_FR4);
             FAT_close_file();
+            ram_free(ram_addr);
             return;
         }
         
@@ -312,5 +311,6 @@ void pgm_file_reader(uint8_t argc, uint8_t *argv[])
     }
     // Clean up and exit
     console_visible = 1;
+    ram_free(ram_addr);
     wish_redraw();
 }

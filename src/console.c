@@ -588,7 +588,7 @@
 
 	if(prefix != NULL) console_write_d(prefix);
 
-	itoa(number, a, base);
+	ultoa(number, a, base);
 	console_write_d(a);
 
 	if(sufix != NULL) console_write_d(sufix);
@@ -837,7 +837,7 @@
      {
          /* Draw a filled block as cursor — invert colors at cursor cell */
          _cursor_x = (uint16_t)cursor_screen_col * char_size_x;
-         _cursor_y = (uint16_t)row * char_size_y;
+         _cursor_y = (uint16_t)row * char_size_y - 1;
  
          /* If there is a character under the cursor draw it in background color */
          if (console_input_index < ilen)
@@ -913,6 +913,7 @@
      /* --- Backspace --- */
      if (key == KEY_BACKSPACE)
      {
+         _redraw_cursor(0);
          if (console_input_index > 0)
          {
              /* Shift everything left of cursor */
@@ -930,6 +931,7 @@
      /* --- Delete --- */
      if (key == KEY_DEL)
      {
+         _redraw_cursor(0);
          uint8_t end = (uint8_t)strlen((char *)console_input_buffer);
          if (console_input_index < end)
          {
@@ -944,6 +946,7 @@
      /* --- Printable ASCII --- */
      if (key >= 0x20 && key <= 0x7E)
      {
+         _redraw_cursor(0);
          uint8_t end = (uint8_t)strlen((char *)console_input_buffer);
          if (end < 254) /* leave 1 byte for null terminator */
          {
@@ -1025,6 +1028,7 @@
  static void _cmd_ls    (uint8_t argc, uint8_t *argv[]);
  static void _cmd_cd    (uint8_t argc, uint8_t *argv[]);
  static void _cmd_mem_check (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_ram_stat(uint8_t argc, uint8_t *argv[]);
  
  /* ── Command table ──────────────────────────────────────────────────────── */
  typedef struct
@@ -1033,27 +1037,29 @@
      wish_cmd_fn_t    handler;
  } wish_cmd_entry_t;
  
- static const char CMD_CLEAR[]  PROGMEM = "clear";
- static const char CMD_ECHO[]   PROGMEM = "echo";
- static const char CMD_HELP[]   PROGMEM = "help";
- static const char CMD_LS[]     PROGMEM = "ls";
- static const char CMD_CD[]     PROGMEM = "cd";
- static const char CMD_MEM[]    PROGMEM = "memchk";
- static const char CMD_BITMAP[] PROGMEM = "bitmap";
- static const char CMD_TEXTVW[] PROGMEM = "text";
+ static const char CMD_CLEAR[]      PROGMEM = "clear";
+ static const char CMD_ECHO[]       PROGMEM = "echo";
+ static const char CMD_HELP[]       PROGMEM = "help";
+ static const char CMD_LS[]         PROGMEM = "ls";
+ static const char CMD_CD[]         PROGMEM = "cd";
+ static const char CMD_MEM[]        PROGMEM = "memchk";
+ static const char CMD_BITMAP[]     PROGMEM = "bitmap";
+ static const char CMD_TEXTVW[]     PROGMEM = "text";
+ static const char CMD_RAMSTAT[]    PROGMEM = "ramstat";
  
  /* Sentinel-terminated.  Add new built-ins here. */
  static const wish_cmd_entry_t wish_cmd_table[] PROGMEM =
  {
-     { CMD_CLEAR, _cmd_clear            },
-     { CMD_ECHO,  _cmd_echo             },
-     { CMD_HELP,  _cmd_help             },
-     { CMD_LS,    _cmd_ls               },
-     { CMD_CD,    _cmd_cd               },
-     { CMD_MEM,   _cmd_mem_check        },
-     { CMD_BITMAP, pgm_show_bitmap      },
-     { CMD_TEXTVW, pgm_file_reader      },
-     { 0,         0                     }  /* sentinel */
+     { CMD_CLEAR,   _cmd_clear            },
+     { CMD_ECHO,    _cmd_echo             },
+     { CMD_HELP,    _cmd_help             },
+     { CMD_LS,      _cmd_ls               },
+     { CMD_CD,      _cmd_cd               },
+     { CMD_MEM,     _cmd_mem_check        },
+     { CMD_BITMAP,  pgm_show_bitmap       },
+     { CMD_TEXTVW,  pgm_file_reader       },
+     { CMD_RAMSTAT, _cmd_ram_stat         },
+     { 0,         0                       }  /* sentinel */
  };
  
  /**
@@ -1602,8 +1608,57 @@
     console_write_f(PSTR_MEM10);
     console_write_f(PSTR_MEM4);
     FAT_get_volume_id(out);
+    out[11] = '\n';
+    out[12] = '\0';
     console_write_d(out);
-    console_write_d("\n");
+ }
+
+ static void _cmd_ram_stat(uint8_t argc, uint8_t *argv[])
+ {
+    (void)argc; (void)argv;
+	uint16_t free_mem = 1;
+	uint8_t *test;
+	test = (uint8_t *)malloc(free_mem);
+	while(test)
+	{
+		test = (uint8_t *)malloc(free_mem);
+		free(test);
+		free_mem++;
+	}
+	// MCU RAM
+    console_write_f(PSTR_MEM1);
+    uint8_t out[16];
+    console_number(free_mem, 10, NULL, " Bytes free\n");
+    
+    free_mem = 384;
+    // External Serial RAM
+    console_write_f(PSTR_MEM2);
+    console_write_f(PSTR_MEM9);
+    console_number(0, 10, NULL, NULL);
+    if(!(ram_status & 0x01)) { console_write_f(PSTR_MEM11); free_mem -= 128; }
+    console_write_f(PSTR_MEM10);
+    console_write_f(PSTR_MEM12);
+    console_write_f(PSTR_MEM9);
+    console_number(1, 10, NULL, NULL);
+    if(!(ram_status & 0x02)) { console_write_f(PSTR_MEM11); free_mem -= 128; }
+    console_write_f(PSTR_MEM10);
+    console_write_f(PSTR_MEM12);
+    console_write_f(PSTR_MEM9);
+    console_number(2, 10, NULL, NULL);
+    if(!(ram_status & 0x04)) { console_write_f(PSTR_MEM11); free_mem -= 128; }
+    console_write_f(PSTR_MEM10);
+    console_write_f(PSTR_MEM13);
+    console_number(free_mem, 10, NULL, " KB\n");
+
+    // RAM allocation check
+    console_write_f(PSTR("External RAM allocation table\n"));
+    for(uint8_t a = 0; a < MAX_SLOTS; a++)
+    {
+        console_write_f(PSTR("  slot["));
+        console_number(a, 10, NULL, "] addr : 0x");
+        console_number(ram_slot_addr[a], 16, NULL, " size : ");
+        console_number(ram_slot_size[a], 10, NULL, " bytes\n");
+    }
  }
 
 
@@ -1638,13 +1693,13 @@
       * Reserve the last slot of the output buffer region as the pending line
       * buffer.  Effective usable line slots = (buffer_size / line_size) - 1.
       */
-      lcd_write_debug("Loading...");
+     lcd_write_debug("Loading...");
      ram_init();
      ram_test();
-     
-     if(!(ram_status & 0x01)) { console_ram_start_addr = 0x20000; }
-     if(!(ram_status & 0x01) && !(ram_status & 0x02)) { console_ram_start_addr = 0x40000; }
-    
+
+     console_ram_start_addr = ram_allocate(console_ram_buffer_size);
+     if(!console_ram_start_addr) { lcd_write_debug("Console buffer allocation error"); return; }
+
      _pending_slot_addr  = console_ram_start_addr
                          + console_ram_buffer_size
                          - console_ram_line_size;
@@ -1668,6 +1723,7 @@
      _path_rebuild_prompt();
  
      /* ── Activate ─────────────────────────────────────────────────────── */
+     
      console_active  = 1;
      console_visible = 1;
  
@@ -1695,6 +1751,8 @@
   * ========================================================================= */
  void wish_run(void)
  {
+    if(!console_active) return;
+
      uint16_t count_1 = 0;
      uint16_t count_2 = 0;
      uint8_t cursor_old = 0, cursor = 0, key = 0;
