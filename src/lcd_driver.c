@@ -455,7 +455,7 @@ void lcd_number(uint32_t number, uint8_t base, uint16_t color, uint8_t size, uin
 
 	if(prefix != NULL) lcd_draw_string(prefix, color, size);
 
-	itoa(number, a, base); // MODIFICADO ACA
+	ultoa(number, a, base); // MODIFICADO ACA
 	lcd_draw_string(a, color, size); // MODIFICADO ACA
 
 	if(sufix != NULL) lcd_draw_string(sufix, color, size);
