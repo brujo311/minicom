@@ -31,6 +31,11 @@
 #define FAT_ERR_END_OF_FILE             12
 #define FAT_ERR_UNKNOWN                 13
 #define FAT_ERR_OVERRUN                 14
+#define FAT_ERR_ALREADY_EXISTS          15
+#define FAT_ERR_NO_FREE_CLUSTER         16
+#define FAT_ERR_DIR_FULL                17   // No empty directory slot and cluster expansion failed
+#define FAT_ERR_WRITE_FAILED            18   // SD_writeSingleBlock returned an error
+#define FAT_ERR_CLUSTER_CHAIN           19   // Unexpected end or corruption in cluster chain
 #define FAT_OK                          0xaa
 #define FAT_EOF                         0xbb
 
@@ -170,6 +175,8 @@ uint8_t FAT_read_file_line(uint8_t *fileName, uint8_t *data);
 uint8_t FAT_read_bytes(uint8_t *fileName, uint8_t *data, uint16_t bytes);
 uint8_t convertFileName (uint8_t *fileName, uint8_t *fileNameFAT);
 uint8_t FAT_find_file(uint8_t *fileNameDirty, uint8_t *file_data);
+uint8_t FAT_create_file(uint8_t *fileName);
+uint8_t FAT_append_data(uint8_t *fileName, uint8_t *data, uint16_t byte_count);
 
 //************* functions *************
 unsigned char getBootSectorData (void);

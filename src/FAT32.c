@@ -888,256 +888,323 @@ for(j = 0; j < 11; j++) //converting small letters to caps
 return 1;
 }
 
-//************************************************************************************
-//Function: to create a file in FAT32 format in the root directory if given 
-//			file name does not exist; if the file already exists then append the data
-//Arguments: pointer to the file name
-//return: none
-//************************************************************************************
-void writeFile (unsigned char *fileName, unsigned char *data)
-{
-unsigned char j, /*data,*/ error, fileCreatedFlag = 0, start = 0, appendFile = 0, sector;
-unsigned int i, firstClusterHigh, firstClusterLow;
-struct dir_Structure *dir;
-unsigned long cluster, nextCluster, prevCluster, firstSector, clusterCount, extraMemory;
-unsigned char a;
-
-//j = readFile (VERIFY, fileName);
-
-if(j == 1) 
-{
-  //transmitString_F(PSTR("  File already existing, appending data.."));
-  console_write("Your fucking file already exists, appending data...\n\0");
-  appendFile = 1;
-  cluster = appendStartCluster;
-  clusterCount=0;
-  while(1)
-  {
-    nextCluster = getSetNextCluster (cluster, GET, 0);
-    if(nextCluster == EOF1) break;
-	cluster = nextCluster;
-	clusterCount++;
-  }
-
-  sector = (fileSize - (clusterCount * sectorPerCluster * bytesPerSector)) / bytesPerSector; //last sector number of the last cluster of the file
-  start = 1;
-//  appendFile();
-//  return;
-}
-else if(j == 2) 
-   return; //invalid file name
-else
-{
-  //TX_NEWLINE;
-  console_write(" Creating File..\n\0");
-  //transmitString_F(PSTR(" Creating File.."));
-
-  cluster = getSetFreeCluster (NEXT_FREE, GET, 0);
-  if(cluster > totalClusters)
-     cluster = rootCluster;
-
-  cluster = searchNextFreeCluster(cluster);
-   if(cluster == 0)
-   {
-      //TX_NEWLINE;
-      //transmitString_F(PSTR(" No free cluster!"));
-     console_write(" No free cluster, asshole..\n\0");
-	  return;
-   }
-  getSetNextCluster(cluster, SET, EOF1);   //last cluster of the file, marked EOF1
-   
-  firstClusterHigh = (unsigned int) ((cluster & 0xffff0000) >> 16 );
-  firstClusterLow = (unsigned int) ( cluster & 0x0000ffff);
-  fileSize = 0;
-}
-
-
-
-while(1)
-{
-   if(start)
-   {
-      start = 0;
-	  startBlock = getFirstSector (cluster) + sector;
-	  SD_readSingleBlock (startBlock);
-	  i = fileSize % bytesPerSector;
-	  j = sector;
-   }
-   else
-   {
-      startBlock = getFirstSector (cluster);
-	  i=0;
-	  j=0;
-   }
-   
-
-   //TX_NEWLINE;
-   //transmitString_F(PSTR(" Enter text (end with ~):"));
-   console_write(" Enter text (end with ~):\n\0");
-   a = 0;
-   do
-   {
-     //data = receiveByte();
-	 if(data[a] == 0x08)	//'Back Space' key pressed
-	 { 
-	   if(i != 0)
-	   { 
-	     //transmitByte(data);
-		 //transmitByte(' ');
-	     //transmitByte(data);
-	     i--; 
-		 fileSize--;
-	   } 
-	   continue;     
-	 }
-	 //transmitByte(data);
-     buffer[i++] = data[a];
-	 fileSize++;
-     if(data[a] == '\r')  //'Carriege Return (CR)' character
-     {
-        //transmitByte ('\n');
-        buffer[i++] = '\n'; //appending 'Line Feed (LF)' character
-		fileSize++;
-     }
-	 
-     if(i == 512) 
-	 {
-	   i=0;
-	   error = SD_writeSingleBlock (startBlock);
-       j++;
-	   if(j == sectorPerCluster) {j = 0; break;}
-	   startBlock++; 
-     }
-     a++;
-	}while (data[a] != '~');
-
-   if(data[a] == '~')
-   {
-      fileSize--;	//to remove the last entered '~' character
-	  i--;
-	  for(;i<512;i++)  //fill the rest of the buffer with 0x00
-        buffer[i]= 0x00;
-   	  error = SD_writeSingleBlock (startBlock);
-
-      break;
-   } 
-	  
-   prevCluster = cluster;
-
-   cluster = searchNextFreeCluster(prevCluster); //look for a free cluster starting from the current cluster
-
-   if(cluster == 0)
-   {
-      //TX_NEWLINE;
-      //transmitString_F(PSTR(" No free cluster!"));
-     console_write(" No free cluster jerk!\n\0");
-	  return;
-   }
-
-   getSetNextCluster(prevCluster, SET, cluster);
-   getSetNextCluster(cluster, SET, EOF1);   //last cluster of the file, marked EOF1
-}        
-
-getSetFreeCluster (NEXT_FREE, SET, cluster); //update FSinfo next free cluster entry
-
-if(appendFile)  //executes this loop if file is to be appended
-{
-  SD_readSingleBlock (appendFileSector);    
-  dir = (struct dir_Structure *) &buffer[appendFileLocation]; 
-  extraMemory = fileSize - dir->fileSize;
-  dir->fileSize = fileSize;
-  SD_writeSingleBlock (appendFileSector);
-  freeMemoryUpdate (REMOVE, extraMemory); //updating free memory count in FSinfo sector;
-
-  
-  //TX_NEWLINE;
-  //transmitString_F(PSTR(" File appended!"));
-  //TX_NEWLINE;
-  console_write(" File appended!\n\0");
-  return;
-}
-
-//executes following portion when new file is created
-
-prevCluster = rootCluster; //root cluster
-
-while(1)
-{
-   firstSector = getFirstSector (prevCluster);
-
-   for(sector = 0; sector < sectorPerCluster; sector++)
-   {
-     SD_readSingleBlock (firstSector + sector);
-	
-
-     for(i=0; i<bytesPerSector; i+=32)
-     {
-	    dir = (struct dir_Structure *) &buffer[i];
-
-		if(fileCreatedFlag)   //to mark last directory entry with 0x00 (empty) mark
-		 { 					  //indicating end of the directory file list
-		   dir->name[0] = 0x00;
-           return;
-         }
-
-        if((dir->name[0] == EMPTY) || (dir->name[0] == DELETED))  //looking for an empty slot to enter file info
-		{
-		  for(j=0; j<11; j++)
-  			dir->name[j] = fileName[j];
-		  dir->attrib = ATTR_ARCHIVE;	//settting file attribute as 'archive'
-		  dir->NTreserved = 0;			//always set to 0
-		  dir->timeTenth = 0;			//always set to 0
-		  dir->createTime = 0x9684;		//fixed time of creation
-		  dir->createDate = 0x3a37;		//fixed date of creation
-		  dir->lastAccessDate = 0x3a37;	//fixed date of last access
-		  dir->writeTime = 0x9684;		//fixed time of last write
-		  dir->writeDate = 0x3a37;		//fixed date of last write
-		  dir->firstClusterHI = firstClusterHigh;
-		  dir->firstClusterLO = firstClusterLow;
-		  dir->fileSize = fileSize;
-
-		  SD_writeSingleBlock (firstSector + sector);
-		  fileCreatedFlag = 1;
-
-		  //TX_NEWLINE;
-		  //TX_NEWLINE;
-		  //transmitString_F(PSTR(" File Created!"));
-          console_write("File created\n\0");
-
-		  freeMemoryUpdate (REMOVE, fileSize); //updating free memory count in FSinfo sector
-	     
-        }
-     }
-   }
-
-   cluster = getSetNextCluster (prevCluster, GET, 0);
-
-   if(cluster > 0x0ffffff6)
-   {
-      if(cluster == EOF1)   //this situation will come when total files in root is multiple of (32*sectorPerCluster)
-	  {  
-		cluster = searchNextFreeCluster(prevCluster); //find next cluster for root directory entries
-		getSetNextCluster(prevCluster, SET, cluster); //link the new cluster of root to the previous cluster
-		getSetNextCluster(cluster, SET, EOF1);  //set the new cluster as end of the root directory
-      } 
-
-      else
-      {	
-	    //transmitString_F(PSTR("End of Cluster Chain"));
-        console_write("End of Cluster Chain\n\0");
-	    return;
-      }
-   }
-   if(cluster == 0) {
-     //transmitString_F(PSTR("Error in getting cluster"));
-     console_write("Eerror of Cluster Chain 23\n\0");
-     return;}
-   
-   prevCluster = cluster;
- }
+/**
+ * @brief Creates an empty file entry in the FAT directory.
+ *        Does NOT write any data — use FAT_append_data() afterwards.
+ *
+ * @param fileName  11-byte FAT8.3 formatted filename
+ * @return 1 on success, 0 on failure (FAT_error_log set)
+ */
+ uint8_t FAT_create_file(uint8_t *fileName)
+ {
+     uint8_t  j, fileCreatedFlag = 0, sector;
+     uint16_t i, firstClusterHigh, firstClusterLow;
+     uint32_t cluster, prevCluster, nextCluster, firstSector;
+     struct dir_Structure *dir;
  
- return;
+     /* Reject if file already exists */
+     if (FAT_open_file(fileName))
+     {
+         FAT_close_file();
+         FAT_error_log = FAT_ERR_ALREADY_EXISTS;
+         return 0;
+     }
+ 
+     /* Find a free cluster to use as the file's first (and initially only) cluster */
+     cluster = getSetFreeCluster(NEXT_FREE, GET, 0);
+     if (cluster > totalClusters)
+         cluster = FAT_working_dir_cluster;
+ 
+     cluster = searchNextFreeCluster(cluster);
+     if (cluster == 0)
+     {
+         FAT_error_log = FAT_ERR_NO_FREE_CLUSTER;
+         return 0;
+     }
+ 
+     /* Mark it as end-of-chain — file is empty for now */
+     getSetNextCluster(cluster, SET, EOF1);
+     getSetFreeCluster(NEXT_FREE, SET, cluster);
+ 
+     firstClusterHigh = (uint16_t)((cluster & 0xFFFF0000) >> 16);
+     firstClusterLow  = (uint16_t) (cluster & 0x0000FFFF);
+ 
+     /* Walk the root directory to find a free slot for the directory entry */
+     prevCluster = FAT_working_dir_cluster;
+ 
+     while (1)
+     {
+         firstSector = getFirstSector(prevCluster);
+ 
+         for (sector = 0; sector < sectorPerCluster; sector++)
+         {
+             SD_readSingleBlock(firstSector + sector);
+ 
+             for (i = 0; i < bytesPerSector; i += 32)
+             {
+                 dir = (struct dir_Structure *)&buffer[i];
+ 
+                 /* After writing our entry, mark the next slot as the new end-of-directory */
+                 if (fileCreatedFlag)
+                 {
+                     dir->name[0] = 0x00;
+                     FAT_error_log = FAT_OK;
+                     return 1;
+                 }
+ 
+                 if ((dir->name[0] == EMPTY) || (dir->name[0] == DELETED))
+                 {
+                     for (j = 0; j < 11; j++)
+                         dir->name[j] = fileName[j];
+ 
+                     dir->attrib          = ATTR_ARCHIVE;
+                     dir->NTreserved      = 0;
+                     dir->timeTenth       = 0;
+                     dir->createTime      = 0x9684;
+                     dir->createDate      = 0x3A37;
+                     dir->lastAccessDate  = 0x3A37;
+                     dir->writeTime       = 0x9684;
+                     dir->writeDate       = 0x3A37;
+                     dir->firstClusterHI  = firstClusterHigh;
+                     dir->firstClusterLO  = firstClusterLow;
+                     dir->fileSize        = 0;   /* no data yet */
+ 
+                     SD_writeSingleBlock(firstSector + sector);
+                     fileCreatedFlag = 1;
+                     /* continue scanning to stamp the end-of-directory marker */
+                 }
+             }
+         }
+ 
+         /* Advance to the next cluster of the root directory */
+         nextCluster = getSetNextCluster(prevCluster, GET, 0);
+ 
+         if (nextCluster > 0x0FFFFFF6)
+         {
+             if (nextCluster == EOF1)
+             {
+                 /* Root directory is full — allocate a new cluster for it */
+                 nextCluster = searchNextFreeCluster(prevCluster);
+                 if (nextCluster == 0)
+                 {
+                     FAT_error_log = FAT_ERR_DIR_FULL;
+                     return 0;
+                 }
+                 getSetNextCluster(prevCluster, SET, nextCluster);
+                 getSetNextCluster(nextCluster, SET, EOF1);
+             }
+             else
+             {
+                 FAT_error_log = FAT_ERR_CLUSTER_CHAIN;
+                 return 0;
+             }
+         }
+ 
+         if (nextCluster == 0)
+         {
+             FAT_error_log = FAT_ERR_CLUSTER_CHAIN;
+             return 0;
+         }
+ 
+         prevCluster = nextCluster;
+     }
+     FAT_error_log = FAT_ERR_UNKNOWN;
+     return 0;
+ }
+
+ /**
+ * @brief Appends exactly byte_count bytes of data to an existing file.
+ *        Allocates new clusters as needed. Updates the directory entry's
+ *        file size and the FSinfo free-cluster count.
+ *
+ * @param fileName   11-byte FAT8.3 formatted filename (must already exist)
+ * @param data       Pointer to the data buffer
+ * @param byte_count Number of bytes to write
+ * @return 1 on success, 0 on failure (FAT_error_log set)
+ */
+uint8_t FAT_append_data(uint8_t *fileName, uint8_t *data, uint16_t byte_count)
+{
+    uint8_t  j, sector, error;
+    uint16_t i;
+    uint32_t cluster, prevCluster, nextCluster, firstSector;
+    uint32_t appendFileSector, appendFileLocation;
+    uint32_t existingSize, totalWritten;
+    struct dir_Structure *dir;
+
+    /* File must exist */
+    if (!FAT_open_file(fileName))
+    {
+        FAT_error_log = FAT_ERR_FILE_NOT_FOUND;
+        return 0;
+    }
+
+    /* ------------------------------------------------------------------
+     * Locate the directory entry so we can read the current file size
+     * and update it when we're done.
+     * ------------------------------------------------------------------ */
+    {
+        uint8_t  found = 0;
+        uint32_t scanCluster = FAT_working_dir_cluster;
+
+        while (!found)
+        {
+            firstSector = getFirstSector(scanCluster);
+
+            for (sector = 0; sector < sectorPerCluster && !found; sector++)
+            {
+                SD_readSingleBlock(firstSector + sector);
+
+                for (i = 0; i < bytesPerSector && !found; i += 32)
+                {
+                    dir = (struct dir_Structure *)&buffer[i];
+
+                    if (dir->name[0] == 0x00) goto dir_scan_done; /* end of list */
+                    if (dir->name[0] == DELETED) continue;
+
+                    uint8_t match = 1;
+                    for (j = 0; j < 11; j++)
+                        if (dir->name[j] != fileName[j]) { match = 0; break; }
+
+                    if (match)
+                    {
+                        appendFileSector   = firstSector + sector;
+                        appendFileLocation = i;
+                        found = 1;
+                    }
+                }
+            }
+
+            nextCluster = getSetNextCluster(scanCluster, GET, 0);
+            if (nextCluster >= 0x0FFFFFF6) break;
+            if (nextCluster == 0)          break;
+            scanCluster = nextCluster;
+        }
+        dir_scan_done:;
+
+        if (!found)
+        {
+            FAT_error_log = FAT_ERR_FILE_NOT_FOUND;
+            return 0;
+        }
+    }
+
+    /* Re-read the directory sector and grab current file size + first cluster */
+    SD_readSingleBlock(appendFileSector);
+    dir = (struct dir_Structure *)&buffer[appendFileLocation];
+
+    existingSize = dir->fileSize;
+    cluster      = ((uint32_t)dir->firstClusterHI << 16) | dir->firstClusterLO;
+
+    /* ------------------------------------------------------------------
+     * Walk to the last cluster of the file so we can continue writing
+     * from where it left off.
+     * ------------------------------------------------------------------ */
+    while (1)
+    {
+        nextCluster = getSetNextCluster(cluster, GET, 0);
+        if (nextCluster == EOF1 || nextCluster >= 0x0FFFFFF6) break;
+        if (nextCluster == 0)
+        {
+            FAT_error_log = FAT_ERR_CLUSTER_CHAIN;
+            return 0;
+        }
+        cluster = nextCluster;
+    }
+
+    /* ------------------------------------------------------------------
+     * Position within the last cluster:
+     *   - which sector within the cluster
+     *   - which byte within that sector
+     * ------------------------------------------------------------------ */
+    uint32_t bytesInLastCluster = existingSize % ((uint32_t)sectorPerCluster * bytesPerSector);
+    sector = (uint8_t)(bytesInLastCluster / bytesPerSector);
+    i      = (uint16_t)(bytesInLastCluster % bytesPerSector);
+
+    firstSector = getFirstSector(cluster);
+    uint32_t startBlock = firstSector + sector;
+
+    /* If we're resuming mid-sector, read the existing contents first */
+    if (i != 0)
+        SD_readSingleBlock(startBlock);
+
+    totalWritten = 0;
+
+    while (totalWritten < byte_count)
+    {
+        buffer[i++] = data[totalWritten++];
+
+        if (i == bytesPerSector)
+        {
+            /* Sector is full — flush it */
+            error = SD_writeSingleBlock(startBlock);
+            if (error)
+            {
+                FAT_error_log = FAT_ERR_WRITE_FAILED;
+                return 0;
+            }
+            i = 0;
+            sector++;
+
+            if (sector == sectorPerCluster)
+            {
+                /* Current cluster exhausted — allocate a new one */
+                sector = 0;
+                prevCluster = cluster;
+                cluster = searchNextFreeCluster(prevCluster);
+
+                if (cluster == 0)
+                {
+                    FAT_error_log = FAT_ERR_NO_FREE_CLUSTER;
+                    return 0;
+                }
+
+                getSetNextCluster(prevCluster, SET, cluster);
+                getSetNextCluster(cluster, SET, EOF1);
+            }
+
+            firstSector = getFirstSector(cluster);
+            startBlock  = firstSector + sector;
+            /* New sector — no need to pre-read, we'll fill it from byte 0 */
+        }
+    }
+
+    /* Flush the final (possibly partial) sector, zero-padding to sector boundary */
+    if (i != 0)
+    {
+        for (; i < bytesPerSector; i++)
+            buffer[i] = 0x00;
+
+        error = SD_writeSingleBlock(startBlock);
+        if (error)
+        {
+            FAT_error_log = FAT_ERR_WRITE_FAILED;
+            return 0;
+        }
+    }
+
+    /* Update FSinfo hint */
+    getSetFreeCluster(NEXT_FREE, SET, cluster);
+
+    /* ------------------------------------------------------------------
+     * Update directory entry: new file size and last-write timestamp
+     * ------------------------------------------------------------------ */
+    SD_readSingleBlock(appendFileSector);
+    dir = (struct dir_Structure *)&buffer[appendFileLocation];
+
+    uint32_t newSize = existingSize + byte_count;
+    freeMemoryUpdate(REMOVE, byte_count);   /* charge only the newly added bytes */
+
+    dir->fileSize       = newSize;
+    dir->writeTime      = 0x9684;   /* replace with real RTC values if available */
+    dir->writeDate      = 0x3A37;
+    dir->lastAccessDate = 0x3A37;
+
+    SD_writeSingleBlock(appendFileSector);
+
+    FAT_error_log = FAT_OK;
+    return 1;
 }
+
 
 
 //***************************************************************************

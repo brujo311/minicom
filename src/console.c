@@ -1046,6 +1046,8 @@
  static const char CMD_BITMAP[]     PROGMEM = "bitmap";
  static const char CMD_TEXTVW[]     PROGMEM = "text";
  static const char CMD_RAMSTAT[]    PROGMEM = "ramstat";
+ static const char CMD_MKFILE[]     PROGMEM = "mkfile";
+ static const char CMD_WFILE[]      PROGMEM = "wfile";
  
  /* Sentinel-terminated.  Add new built-ins here. */
  static const wish_cmd_entry_t wish_cmd_table[] PROGMEM =
@@ -1059,6 +1061,8 @@
      { CMD_BITMAP,  pgm_show_bitmap       },
      { CMD_TEXTVW,  pgm_file_reader       },
      { CMD_RAMSTAT, _cmd_ram_stat         },
+     { CMD_MKFILE,  pgm_mk_file           },
+     { CMD_WFILE,   pgm_app_file          },
      { 0,         0                       }  /* sentinel */
  };
  

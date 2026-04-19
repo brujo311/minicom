@@ -120,197 +120,211 @@ void pgm_show_bitmap(uint8_t argc, uint8_t *argv[])
    return;
 }
 
-static const char PSTR_FR1[]  PROGMEM = "file reader: usage: file_reader <filename>\n";
-static const char PSTR_FR2[]  PROGMEM = "file reader: file not found\n";
-static const char PSTR_FR3[]  PROGMEM = "file reader: file is too large (>32 KB)\n"; // Not used
-static const char PSTR_FR4[]  PROGMEM = "file reader: read error\n";
-static const char PSTR_FR5[]  PROGMEM = "File loading succeed\n";
-static const char PSTR_FR6[]  PROGMEM = "Press 'q' to exit the file viewer";
-
 void pgm_file_reader(uint8_t argc, uint8_t *argv[])
 {
     if (argc < 2) {
-        console_write_f(PSTR_FR1); // Using the same error message as bitmap function
+        console_write_f(PSTR("file reader: usage: file_reader <filename>\n"));
         return;
     }
 
     uint8_t *filename = argv[1];
-    
-    // Get directory entry to check if file exists and get size
     struct dir_Structure dir_entry;
-    
-    // Search for file in directory
-    if(!FAT_find_file(filename, (uint8_t *)&dir_entry))
-    {
-       console_write_f(PSTR_FR2);
-       return;
+
+    if (!FAT_find_file(filename, (uint8_t *)&dir_entry)) {
+        console_write_f(PSTR("file reader: file not found\n"));
+        return;
     }
 
     uint32_t ram_addr = ram_allocate(dir_entry.fileSize);
-    if(!ram_addr) { console_write_f(PSTR("Error allocating file in RAM, not enaugh memory\n")); return; }
+    if (!ram_addr) { console_write_f(PSTR("Error allocating file in RAM, not enaugh memory\n")); return; }
     console_write_f(PSTR("File allocated to RAM -> "));
     console_number(dir_entry.fileSize, 10, NULL, " KB\n");
-    
-    
-    // Open the file
+
     if (!FAT_open_file(filename)) {
-        console_write_f(PSTR_FR2); // "error opening file"
+        console_write_f(PSTR("file reader: file not found\n"));
         ram_free(ram_addr);
         return;
     }
-    
-    // Read file into RAM
+
     uint32_t bytes_read = 0;
     uint8_t buffer[64];
     uint16_t remaining_bytes = dir_entry.fileSize;
-    
     while (remaining_bytes > 0) {
         uint16_t to_read = (remaining_bytes > 64) ? 64 : remaining_bytes;
-        
         if (!FAT_read_bytes(NULL, buffer, to_read)) {
-            console_write_f(PSTR_FR4);
+            console_write_f(PSTR("file reader: read error\n"));
             FAT_close_file();
             ram_free(ram_addr);
             return;
         }
-        
         ram_write(ram_addr + bytes_read, buffer, to_read);
         bytes_read += to_read;
         remaining_bytes -= to_read;
     }
-    
-    // Show success message
-    console_write_f(PSTR_FR5);
+
+    console_write_f(PSTR("File loading succeed\n"));
     FAT_close_file();
-    
-    // Prepare display
+
+    // --- Display setup ---
     lcd_clear_screen(console_back_color);
     console_visible = 0;
-    
-    // Draw title bar (GRAY)
+
     uint16_t title_bar_height = char_size_y * 2;
+    uint16_t status_bar_y     = lcd_size_y - char_size_y * 2;
+
+    // FIX: max_lines uses status_bar_y directly instead of double-subtracting title_bar_height
+    uint16_t content_top    = title_bar_height + 5;
+    uint16_t content_bottom = status_bar_y;
+    uint16_t max_lines      = (content_bottom - content_top) / char_size_y;
+
     lcd_draw_window(0, lcd_size_x - 1, 0, title_bar_height - 1, GRAY);
-    
-    // Draw status bar
-    uint16_t status_bar_y = lcd_size_y - char_size_y * 2;
     lcd_draw_window(0, lcd_size_x - 1, status_bar_y, lcd_size_y - 1, GRAY);
-    
-    // Display file name in title bar
+
     lcd_set_position(10, 5);
     lcd_draw_string(filename, WHITE, console_char_size);
-    
-    // Display file size in status bar
+
     lcd_set_position(10, status_bar_y + 5);
     lcd_number(dir_entry.fileSize, 10, WHITE, 1, NULL, " bytes");
-    
-    // Draw exit instruction
-    lcd_set_position(lcd_size_x - (50 * char_size_x), status_bar_y + 5);
-    lcd_draw_string_f(PSTR_FR6, WHITE, 1);
-    
-    // Display file content (simple text display)
-    uint8_t line_buffer[64];
-    uint16_t line_count = 0;
-    uint16_t max_lines = (lcd_size_y - (title_bar_height * 2) - (char_size_y * 2)) / char_size_y;
-    uint16_t scroll_offset = 0;
-    uint16_t current_line = 0;
-    
-    // Get the total number of lines by reading all content
+
+    lcd_set_position(lcd_size_x - (33 * char_size_x), status_bar_y + 5);
+    lcd_draw_string_f(PSTR("Press 'q' to exit the file viewer"), WHITE, 1);
+
+    // --- Count total lines ---
+    uint16_t total_lines = 0;
     uint32_t file_pos = ram_addr;
-    uint16_t line_count_calc = 0;
-    uint8_t byte;
+    uint8_t  byte;
+    uint8_t  last_was_newline = 1;   // treat start-of-file as a fresh line
+
     while (file_pos < ram_addr + dir_entry.fileSize) {
         byte = ram_read_byte(file_pos++);
-        if (byte == '\n' || byte == '\0') {
-            line_count_calc++;
+        if (byte == '\n') {
+            total_lines++;
+            last_was_newline = 1;
+        } else if (byte != '\r') {
+            last_was_newline = 0;
         }
     }
-    
-    // Display content with scrolling
-    uint16_t display_lines = 0;
-    uint16_t current_line_start = 0;
-    uint16_t chars_in_line = 0;
-    uint16_t current_x = 0;
-    uint16_t current_y = title_bar_height + 5;
-    
-    // Draw initial lines
-    file_pos = ram_addr;
-    uint8_t char_buffer[128];
-    uint16_t char_index = 0;
-    
-    while (file_pos < ram_addr + dir_entry.fileSize) {
-        byte = ram_read_byte(file_pos++);
-        
-        if (byte == '\n' || byte == '\0') {
-            char_buffer[char_index] = '\0';
-            if (current_y >= title_bar_height && current_y < (lcd_size_y - (char_size_y * 2))) {
-                lcd_set_position(10, current_y);
-                lcd_draw_string(char_buffer, console_text_color, console_char_size);
-                display_lines++;
-            }
-            char_index = 0;
-            current_y += char_size_y;
-        } else if (byte == '\r') {
-            // Skip carriage returns
-            continue;
-        } else {
-            char_buffer[char_index++] = byte;
-        }
-    }
-    
-    // Main loop for scrolling and interaction
+    // If the file doesn't end with '\n', the last line still counts
+    if (!last_was_newline) total_lines++;
+
+    // --- Redraw helper lambda (inline via goto-free block) ---
+    // We'll use a local function-style macro to avoid repetition.
+    // Called once before the loop and then after every keypress.
+
+    uint16_t scroll_offset = 0;
+    uint8_t  char_buffer[128];
+    uint16_t char_index;
+
+    #define REDRAW_CONTENT() do {                                                   \
+        /* Clear content area */                                                    \
+        lcd_draw_window(0, lcd_size_x - 1,                                         \
+                        title_bar_height, content_bottom - 1,                      \
+                        console_back_color);                                        \
+        /* Walk the file, skip lines before scroll_offset,                         \
+           draw lines in [scroll_offset, scroll_offset + max_lines) */             \
+        uint32_t _pos   = ram_addr;                                                 \
+        uint16_t _lnum  = 0;          /* logical line number being assembled */    \
+        uint16_t _drawn = 0;          /* how many lines rendered so far */         \
+        uint16_t _y     = content_top;                                              \
+        char_index = 0;                                                             \
+        while (_pos < ram_addr + dir_entry.fileSize) {                             \
+            uint8_t _b = ram_read_byte(_pos++);                                    \
+            if (_b == '\r') continue;                                               \
+            if (_b == '\n' || _b == '\0') {                                        \
+                char_buffer[char_index] = '\0';                                    \
+                if (_lnum >= scroll_offset && _drawn < max_lines) {                \
+                    lcd_set_position(10, _y);                                      \
+                    lcd_draw_string(char_buffer, console_text_color,               \
+                                    console_char_size);                            \
+                    _y += char_size_y;   /* FIX: advance Y only for drawn lines */ \
+                    _drawn++;                                                       \
+                }                                                                  \
+                char_index = 0;                                                    \
+                _lnum++;                                                            \
+                if (_drawn >= max_lines) break;  /* no need to read further */     \
+            } else {                                                                \
+                if (char_index < sizeof(char_buffer) - 1)                          \
+                    char_buffer[char_index++] = _b;                                \
+            }                                                                      \
+        }                                                                          \
+        /* Handle last line if file doesn't end with '\n' */                       \
+        if (char_index > 0 && _lnum >= scroll_offset && _drawn < max_lines) {     \
+            char_buffer[char_index] = '\0';                                        \
+            lcd_set_position(10, _y);                                              \
+            lcd_draw_string(char_buffer, console_text_color, console_char_size);  \
+        }                                                                          \
+    } while (0)
+
+    // Initial draw
+    REDRAW_CONTENT();
+
+    // --- Input / scroll loop ---
     uint8_t key;
+    uint16_t max_scroll = (total_lines > max_lines) ? (total_lines - max_lines) : 0;
+
     while (1) {
         key = keyboard_wait_key();
-        
+
         if (key == 'q') {
             break;
         } else if (key == KEY_UP) {
-            scroll_offset = (scroll_offset > 0) ? scroll_offset - 1 : 0;
+            if (scroll_offset > 0) {
+                scroll_offset--;
+                REDRAW_CONTENT();
+            }
         } else if (key == KEY_DOWN) {
-            scroll_offset = (scroll_offset < line_count_calc) ? scroll_offset + 1 : line_count_calc;
-        } else if (key == KEY_LEFT) {
-            // Horizontal scrolling not implemented for text files
-        } else if (key == KEY_RIGHT) {
-            // Horizontal scrolling not implemented for text files
-        }
-        
-        // Redraw display with new scroll position
-        lcd_draw_window(0, lcd_size_x - 1, title_bar_height, lcd_size_y - (title_bar_height * 2) - 1, console_back_color);
-        
-        // Redraw file content
-        uint32_t display_pos = ram_addr;
-        uint16_t line_num = 0;
-        uint8_t current_line_char = 0;
-        uint16_t y_pos = title_bar_height + 5;
-        uint8_t in_line = 0;
-        
-        // Reset position for display
-        file_pos = ram_addr;
-        char_index = 0;
-        current_y = title_bar_height + 5;
-        
-        while (file_pos < ram_addr + dir_entry.fileSize && y_pos < lcd_size_y - char_size_y * 2) {
-            byte = ram_read_byte(file_pos++);
-            
-            if (byte == '\n' || byte == '\0') {
-                char_buffer[char_index] = '\0';
-                if (line_num >= scroll_offset && line_num < scroll_offset + max_lines) {
-                    lcd_set_position(10, y_pos);
-                    lcd_draw_string(char_buffer, WHITE, console_char_size);
-                }
-                char_index = 0;
-                line_num++;
-                y_pos += char_size_y;
-            } else if (byte == '\r') {
-                // Skip carriage returns
-                continue;
-            } else {
-                char_buffer[char_index++] = byte;
+            if (scroll_offset < max_scroll) {
+                scroll_offset++;
+                REDRAW_CONTENT();
             }
         }
+        // KEY_LEFT / KEY_RIGHT: horizontal scroll not implemented
     }
-    // Clean up and exit
+
+    #undef REDRAW_CONTENT
+
+    // --- Cleanup ---
     console_visible = 1;
     ram_free(ram_addr);
     wish_redraw();
+}
+
+void pgm_mk_file(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 2) {
+        console_write_f(PSTR("file maker: usage: mkfile <filename>\n"));
+        return;
+    }
+
+    uint8_t *filename = argv[1];
+    console_write_f(PSTR("Creating file... "));
+    if(FAT_create_file(filename))
+    {
+        console_write_f(PSTR("done\n"));
+        return;
+    }
+    console_write_f(PSTR("exit with error status : "));
+    console_number(FAT_error_log, 10, NULL, "\n");
+    return;
+}
+
+void pgm_app_file(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("file writer: usage: wfile <filename> <data>\n"));
+        return;
+    }
+
+    uint8_t *filename = argv[1];
+    uint8_t *data = argv[2];
+
+    console_write_f(PSTR("Opening file... "));
+    if(FAT_append_data(filename, data, strlen(data)))
+    {
+        console_write_f(PSTR("done\n"));
+        return;
+    }
+    console_write_f(PSTR("exit with error status : "));
+    console_number(FAT_error_log, 10, NULL, "\n");
+    return;
 }

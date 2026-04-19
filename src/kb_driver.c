@@ -33,8 +33,9 @@ void twi_init(void)
      * External pull-up resistors are required on both lines.
      * PORTC pins default to input — just configure wired-and output for the TWI
      * peripheral to drive them low. */
-    PORTC.PIN0CTRL = PORT_OPC_WIREDAND_gc;
-    PORTC.PIN1CTRL = PORT_OPC_WIREDAND_gc;
+     
+    //PORTC.PIN0CTRL = PORT_OPC_WIREDAND_gc;
+    //PORTC.PIN1CTRL = PORT_OPC_WIREDAND_gc;
 
     /* Set baud rate for ~100 kHz */
     TWIC.MASTER.BAUD = TWI_BAUD_VAL;
