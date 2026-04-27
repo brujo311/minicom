@@ -78,9 +78,9 @@ void console_write(uint8_t * text);
 
 uint8_t SD_check_alive();
 uint8_t SD_init();
-static uint8_t SD_read_CID(uint8_t * cid);
-static uint8_t SD_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc);
-static void SD_cmd_end(void);
+//static uint8_t SD_read_CID(uint8_t * cid);
+//static uint8_t SD_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc);
+//static void SD_cmd_end(void);
 uint8_t SD_erase (uint32_t startBlock, uint32_t totalBlocks);
 uint8_t SD_readSingleBlock(uint32_t startBlock);
 uint8_t SD_writeSingleBlock(uint32_t startBlock);

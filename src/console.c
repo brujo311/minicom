@@ -36,13 +36,16 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
- #define F_CPU 32000000UL // CPU frequency in Hz (32MHz)
+#define F_CPU 32000000UL // CPU frequency in Hz (32MHz)
 
  #include <util/delay.h>
  #include <avr/io.h>
  #include <stdlib.h>
  #include <stdint.h>
  #include <string.h>
+ #include <stdarg.h>
+ #include <stddef.h>
+ #include <ctype.h>
  #include <avr/pgmspace.h>
  #include "mcu_driver.h"
  #include "lcd_driver.h"
@@ -51,47 +54,21 @@
  #include "ningen_ui.h"
  #include "colors.h"
  #include "ram_driver.h"
+ #include "nvm_driver.h"
  #include "kb_driver.h"
  #include "console.h"
  #include "programs.h"
+ #include "script.h"
  
  /* =========================================================================
   * PROGMEM string table
   * All string literals the shell itself needs live here so SRAM is not used.
   * ========================================================================= */
  static const char PSTR_SHELL_NAME[]  PROGMEM = "wish";
- static const char PSTR_PROMPT_SEP[]  PROGMEM = " ";
- static const char PSTR_ROOT_CHAR[]   PROGMEM = "# ";
- static const char PSTR_USER_CHAR[]   PROGMEM = "$ ";
- static const char PSTR_ROOT_DIR[]    PROGMEM = "/";
+ static const char PSTR_SPACE[]       PROGMEM = " ";
  static const char PSTR_NEWLINE[]     PROGMEM = "\n";
- static const char PSTR_WELCOME1[]    PROGMEM = "########################################\n";
- static const char PSTR_WELCOME2[]    PROGMEM = "#                                      #\n";
- static const char PSTR_WELCOME3[]    PROGMEM = "#      WISH [ Wizard Shell ] v1.0      #\n";
- static const char PSTR_WELCOME4[]    PROGMEM = "#                                      #\n";
- static const char PSTR_WELCOME5[]    PROGMEM = "########################################\n";
- static const char PSTR_WELCOME6[]    PROGMEM = " \n";
- static const char PSTR_WELCOME7[]    PROGMEM = "Atmel ATxmega128A3U @ 32 Mhz\n";
- static const char PSTR_WELCOME8[]    PROGMEM = " \n";
+ static const char PSTR_0x[]          PROGMEM = "0x";
 
- static const char PSTR_WELCOME13[]   PROGMEM = " \n";
- static const char PSTR_WELCOME14[]   PROGMEM = "Done...\n";
- static const char PSTR_WELCOME15[]   PROGMEM = "Use 'help' to see available command list\n";
- static const char PSTR_CMD_NOTFOUND[]PROGMEM = ": command not found\n";
- static const char PSTR_UNKNOWN_KEY[] PROGMEM = "";   /* suppress unknown keys silently */
- 
- /* ls / cd strings */
- static const char PSTR_LS_NO_SD[]    PROGMEM = "ls: no SD card\n";
- static const char PSTR_LS_ERR[]      PROGMEM = "ls: error reading directory\n";
- static const char PSTR_LS_EMPTY[]    PROGMEM = "(empty)\n";
- static const char PSTR_LS_DIR_TAG[]  PROGMEM = "/";   /* appended after dir names */
- static const char PSTR_CD_USAGE[]    PROGMEM = "cd: usage: cd [dirname]\n";
- static const char PSTR_CD_NO_SD[]    PROGMEM = "cd: no SD card\n";
- static const char PSTR_CD_NOTFOUND[] PROGMEM = "cd: no such directory: ";
- static const char PSTR_CD_NOTADIR[]  PROGMEM = "cd: not a directory: ";
- static const char PSTR_CD_MAXDEPTH[] PROGMEM = "cd: max directory depth reached\n";
- static const char PSTR_CD_ERR[]      PROGMEM = "cd: error\n";
- 
  /* =========================================================================
   * Configurable globals  (caller loads from EEPROM before wish_init)
   * ========================================================================= */
@@ -104,6 +81,11 @@
  uint8_t  console_ram_scroll_delete = 50;      /* lines to evict when buffer full */
  uint8_t  char_size_x             = 8;         /* pixel width  of one glyph cell  */
  uint8_t  char_size_y             = 10;        /* pixel height of one glyph cell  */
+
+ uint32_t ram_working_address = 0;
+ uint16_t settings_start_addr = 256;
+ uint16_t settings_max_size = 512;
+
  
  /* Derived at init — do NOT set manually */
  uint8_t  console_ram_line_size   = 0;         /* 1 + cols_per_row                */
@@ -118,7 +100,7 @@
  uint8_t  console_prompt_size       = 9;
  uint8_t  console_input_buffer[256];
  uint8_t  console_input_index       = 0;
- uint8_t  console_root_mode         = 0;
+ uint8_t  console_root_mode         = '$';
  
  /* Scroll state */
  volatile uint8_t  prompt_row            = 0;   /* screen row of the prompt line */
@@ -128,6 +110,9 @@
  uint16_t _cursor_x = 0;
  uint16_t _cursor_y = 0;
  uint8_t _char_under_cursor = 0;
+
+ uint32_t man_directory_cluster = 0;
+ uint32_t conf_directory_cluster = 0;
  
  /* =========================================================================
   * Path stack — tracks the current directory nesting for prompt building.
@@ -154,16 +139,466 @@
  /* Max characters stored for a single directory name segment (FAT 8+3 = 11,
   * but leave headroom for longer names if the FAT layer ever supports them). */
  #define WISH_PATH_NAME_MAX      12   /* 11 chars + 1 length byte per slot  */
+
+
+ #define EEPROM_SLOT_SIZE 16 // EEPROM for setting storage
  
  /* External RAM base address for the path stack.
   * Place it immediately after the console output buffer.
   * Total size = WISH_PATH_MAX_DEPTH * WISH_PATH_NAME_MAX = 8*12 = 96 bytes.
   * Caller may override before wish_init() if the memory map differs.        */
- uint32_t wish_path_ram_addr =
-     0 + 65536UL;   /* console_ram_start_addr + console_ram_buffer_size default */
+ uint32_t wish_path_ram_addr = 0 + 65536UL;   /* console_ram_start_addr + console_ram_buffer_size default */
  
  /* Current nesting depth (0 = root). */
  static uint8_t wish_path_depth = 0;
+
+  /* =========================================================================
+  * Static helpers — forward declarations
+  * ========================================================================= */
+  static uint16_t  _cols_per_row      (void);
+  static uint16_t  _rows_on_screen    (void);
+  static uint16_t  _max_stored_lines  (void);
+  
+  static void      _ram_write_line    (uint16_t slot, const uint8_t *data, uint8_t len);
+  static uint8_t   _ram_read_line     (uint16_t slot, uint8_t *out_buf);
+  
+  static void      _evict_lines       (void);
+  static void      _append_line       (const uint8_t *data, uint8_t len);
+  static void      _commit_pending    (void);
+  static void      _pending_append    (const uint8_t *data, uint8_t len);
+  
+  static void      _redraw_output     (void);
+  static void      _redraw_prompt_row (void);
+  static void      _clear_row         (uint8_t row);
+  static void      _draw_char_at      (uint8_t col, uint8_t row, uint8_t c,
+                                       uint16_t color);
+  static void      _draw_str_at       (uint8_t col, uint8_t row,
+                                       const uint8_t *str, uint8_t len,
+                                       uint16_t color);
+  
+  static void      _scroll_view_up    (uint8_t n);
+  static void      _scroll_view_down  (uint8_t n);
+  static void      _scroll_view_to_bottom(void);
+  
+  static void      _handle_key        (uint8_t key);
+  static void      _handle_enter      (void);
+  //static void      _process_command   (uint8_t *line); -> to header
+  
+  static void      _pgm_to_sram       (const char *pgm_src, uint8_t *dst,
+                                       uint8_t max_len);
+
+ static uint8_t _has_master_key()
+ {
+    if(console_root_mode == '#') return 1;
+    return 0;
+ }
+
+ static uint32_t _parse_hex_string(const char* str) {
+    uint32_t result = 0;
+    const char* p = str;
+    
+    // Skip "0x" prefix if present
+    if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
+        p += 2;
+    }
+    
+    while (*p) {
+        result <<= 4;
+        if (*p >= '0' && *p <= '9') {
+            result += *p - '0';
+        } else if (*p >= 'a' && *p <= 'f') {
+            result += *p - 'a' + 10;
+        } else if (*p >= 'A' && *p <= 'F') {
+            result += *p - 'A' + 10;
+        }
+        p++;
+    }
+    
+    return result;
+}
+
+// Helper function to parse string to uint8_t
+static uint8_t _parse_uint8(const char* str) {
+    return (uint8_t)strtoul(str, NULL, 0);
+}
+
+// Helper function to parse string to uint16_t
+static uint16_t _parse_uint16(const char* str) {
+    return (uint16_t)strtoul(str, NULL, 0);
+}
+
+// Helper function to parse string to uint32_t
+static uint32_t _parse_uint32(const char* str) {
+    return (uint32_t)strtoul(str, NULL, 0);
+}
+
+// Helper function to parse string to double
+static double _parse_double(const char* str) {
+    return atof(str);
+}
+
+// Helper function to parse string to bool
+static uint8_t _parse_bool(const char* str) {
+    if (strcasecmp(str, "true") == 0 || strcmp(str, "1") == 0) {
+        return 1;
+    } else if (strcasecmp(str, "false") == 0 || strcmp(str, "0") == 0) {
+        return 0;
+    }
+    return 0;
+}
+
+uint8_t _get_setting_from_file(const char *pgm_filename, const char *pgm_fetch, void *setting) 
+{
+    uint8_t filename[12];
+    for(uint8_t a = 0; a < 12; a++) filename[a] = 0;
+    _pgm_to_sram(pgm_filename, filename, 12);
+    
+    if(!man_directory_cluster) { console_write_f(PSTR("conf : missing conf directory\n")); return 0; }
+    uint32_t fat_dir_old = FAT_working_dir_cluster_old;
+    uint32_t fat_dir = FAT_working_dir_cluster;
+    FAT_working_dir_cluster = 0;
+    FAT_working_dir_cluster_old = 0;
+    
+    if(!FAT_load_directory("conf"))
+    {
+        FAT_working_dir_cluster = fat_dir;
+        FAT_working_dir_cluster_old = fat_dir_old;
+        console_write_f(PSTR("conf : error opening directory\n"));
+        return 0;
+    }
+
+    uint8_t a = 0;
+    while(filename[a]) a++;
+
+    filename[a] = '.';
+    filename[a + 1] = 'c';
+    filename[a + 2] = 'n';
+    filename[a + 3] = 'f';
+
+    if(!FAT_open_file(filename))
+    {
+        FAT_working_dir_cluster = fat_dir;
+        FAT_working_dir_cluster_old = fat_dir_old;
+        console_write_f(PSTR("conf : error opening config file\n"));
+        return 0;
+    }
+
+  uint8_t fetch[64];                     /* error: cannot open */
+
+  _pgm_to_sram(pgm_fetch, fetch, 64);
+
+  console_write_f(PSTR("File open, looking for : "));
+  console_write_d(fetch);
+  console_write_f(PSTR_NEWLINE);
+
+  /* ---------- 2. Read line by line --------------------------- */
+  for (;;) /* exit when read fails */
+  {
+    uint8_t line[256]; /* enough for our test files */
+
+    uint8_t rc = FAT_read_file_line(filename, line);
+    if (rc == 0) { /* EOF or read error */
+      console_write_f(PSTR("read failure\n"));
+    } else if (rc != 1) {
+      console_write_f(
+          PSTR("FAT_read_file_line returned non EOF value\n")); /* sanity check */
+    }
+
+    /* ---------- 3. Skip comment lines ----------------------- */
+    char *p = line;
+    while (*p && (*p == '#' || *p == ' '))
+      ++p; /* ignore leading whitespace & # */
+
+    if (!*p)
+      continue; /* empty or only comments */
+
+    /* ---------- 4. Locate first "=" or ":" ----------------- */
+    size_t idx1 = 0;
+    while (idx1 < sizeof(line) && isspace((unsigned char)line[idx1]))
+      ++idx1;
+
+    if (idx1 == sizeof(line))
+      continue; /* line too long */
+
+    size_t sepIdx = 0;
+    while ((line[idx1] == '=' || line[idx1] == ':') && idx1 < sizeof(line))
+      ++sepIdx, ++idx1;
+
+    if (idx1 == sizeof(line) || line[idx1] != '\0')
+      continue; /* no separator after name */
+
+    size_t sepPos = idx1;
+    while ((line[idx1] != ' ' && line[idx1] != '\0') &&
+           !isspace((unsigned char)line[idx1]))
+      ++idx1;
+    sepPos = idx1; /* end of separator */
+
+    const char *name = line + idx1; /* token before separator */
+    size_t nameLen = (size_t)(sepPos - idx1);
+
+    const char *value = line + sepPos; /* starts after the separator */
+    size_t valueStart = 0;
+
+    /* ---------- 5. Trim surrounding quotes ------------------- */
+    while (valueStart < sizeof(line) &&
+           isspace((unsigned char)value[valueStart]))
+      ++valueStart;
+
+    if (value[valueStart] == '"') {
+      const char *endQuote = strchr(value + valueStart, '"');
+      if (endQuote)
+        valueStart += endQuote - value;
+      while (valueStart < sizeof(line) &&
+             isspace((unsigned char)value[valueStart]))
+        ++valueStart;
+    }
+
+    /* ---------- 6. Compare name with fetch ----------------- */
+    const char *fetchStr =
+        (char *)fetch; /* fetch points to a one‑char string */
+    if (nameLen != 1 || strncmp(name, fetchStr, 1) != 0)
+      continue; /* wrong setting name */
+
+    /* ---------- 7. Parse the value --------------------------- */
+    size_t end = sizeof(line); /* safety: never read past buffer */
+    uint8_t u = (uint8_t)-1;   /* sentinel, will be replaced if possible */
+
+    /* ---- Hexadecimal integer
+     * --------------------------------------------------- */
+    if ((value + valueStart)[0] == 'x') {
+      const char *hexEnd = value + valueStart;
+      while (*hexEnd && *hexEnd != '\0' && !isspace((unsigned char)*hexEnd) &&
+             *(hexEnd + 1) != NULL)
+        ++hexEnd; /* stop at first space/0 */
+
+      size_t hexLen = (size_t)(hexEnd - (value + valueStart));
+      u = (uint8_t)strtoul(hexEnd, NULL, 16);
+    }
+    /* ---- Floating point ----------------------------------------------------
+     */
+    else if ((end - valueStart) > 2 && value[end - 1] == '.') {
+      float f = atof(value + valueStart);
+      memcpy(setting, &f, sizeof(f));
+      FAT_working_dir_cluster = fat_dir;
+      FAT_working_dir_cluster_old = fat_dir_old;
+      FAT_close_file();
+      return 1;
+    }
+    /* ---- Anything else we treat as an integer (may be larger than uint8_t) */
+    else {
+      size_t intLen = end - valueStart; /* number of characters to read */
+      if (intLen > 0 && isdigit((unsigned char)value[valueStart])) {
+        u = (uint8_t)strtoul(value + valueStart, NULL, 10);
+      }
+    }
+
+    /* Store the result ------------------------------------------------------
+     */
+    switch (sizeof(u)) { /* we store the biggest type we saw */
+    case sizeof(uint16_t):
+      memcpy(setting, &u, sizeof(u));
+      break;
+    default:
+      memcpy(setting, &u,
+             sizeof(u)); /* uint8_t or float already stored above */
+    }
+    FAT_working_dir_cluster = fat_dir;
+    FAT_working_dir_cluster_old = fat_dir_old;
+    FAT_close_file();
+    return 1; /* success */
+  }
+
+  console_write_f(PSTR("FAT_read_file_line returned unexpected non EOF value\n"));
+  FAT_working_dir_cluster = fat_dir;
+  FAT_working_dir_cluster_old = fat_dir_old;
+  FAT_close_file();
+  return 0;
+}
+
+ // Function to convert "yyyymmdd hh:mm" string to components
+uint8_t _parse_datetime_string(uint8_t* datetime_str, datetime_components_t* components) 
+{
+    // Validate input
+    if (datetime_str == NULL || components == NULL) {
+        return 0; // Error: invalid input
+    }
+    
+    // Check minimum length (17 characters for "YYYYMMDD HH:MM")
+    if (strlen(datetime_str) < 14) {
+        return 0; // Error: string too short
+    }
+    
+    // Validate format: should be "YYYYMMDD HH:MM" or "YYYYMMDD HH:MM:SS"
+    // Check for space at position 8 and colon at positions 14-15
+    if (datetime_str[8] != ' ' || datetime_str[11] != ':') {
+        return 0; // Error: invalid format
+    }
+    
+    // Parse year (YYYYMMDD)
+    uint16_t year_temp = 0;
+    for (int i = 0; i < 4; i++) {
+        if (datetime_str[i] < '0' || datetime_str[i] > '9') {
+            return 0; // Error: invalid digit
+        }
+        year_temp = year_temp * 10 + (datetime_str[i] - '0');
+    }
+    
+    // Parse month (MM)
+    uint8_t month_temp = 0;
+    for (int i = 4; i < 6; i++) {
+        if (datetime_str[i] < '0' || datetime_str[i] > '9') {
+            return 0; // Error: invalid digit
+        }
+        month_temp = month_temp * 10 + (datetime_str[i] - '0');
+    }
+    
+    // Parse day (DD)
+    uint8_t day_temp = 0;
+    for (int i = 6; i < 8; i++) {
+        if (datetime_str[i] < '0' || datetime_str[i] > '9') {
+            return 0; // Error: invalid digit
+        }
+        day_temp = day_temp * 10 + (datetime_str[i] - '0');
+    }
+    
+    // Parse hour (HH)
+    uint8_t hour_temp = 0;
+    for (int i = 9; i < 11; i++) {
+        if (datetime_str[i] < '0' || datetime_str[i] > '9') {
+            return 0; // Error: invalid digit
+        }
+        hour_temp = hour_temp * 10 + (datetime_str[i] - '0');
+    }
+    
+    // Parse minute (MM)
+    uint8_t minute_temp = 0;
+    for (int i = 12; i < 14; i++) {
+        if (datetime_str[i] < '0' || datetime_str[i] > '9') {
+            return 0; // Error: invalid digit
+        }
+        minute_temp = minute_temp * 10 + (datetime_str[i] - '0');
+    }
+    
+    // Validate ranges
+    if (year_temp < 1000 || year_temp > 9999 ||
+        month_temp < 1 || month_temp > 12 ||
+        day_temp < 1 || day_temp > 31 ||
+        hour_temp > 23 ||
+        minute_temp > 59) {
+        return 0; // Error: invalid range
+    }
+    
+    // Fill components structure
+    components->year = year_temp;
+    components->month = month_temp;
+    components->day = day_temp;
+    components->hour = hour_temp;
+    components->minute = minute_temp;
+    components->second = 0; // Default to 0 seconds
+    
+    return 1; // Success
+}
+
+static uint32_t _get_setting(uint8_t index)
+{
+    uint32_t setting = 0;
+    // Calculate EEPROM address for this setting
+    uint16_t eeprom_addr = settings_start_addr + ((index - 1) * EEPROM_SLOT_SIZE); // Placeholder calculation
+    
+    uint8_t data_type = eeprom_read_byte(eeprom_addr);
+
+    if(!data_type || data_type > 5) return 0;
+
+    uint8_t data[EEPROM_SLOT_SIZE];
+    for(uint8_t a = 0; a < (EEPROM_SLOT_SIZE - 1); a++) data[a] = eeprom_read_byte(eeprom_addr + a + 1);
+
+    if(data_type == 1) setting = data[0];
+    if(data_type == 2) setting = (uint16_t)data[0] << 8 | data[1];
+    if(data_type == 3) setting = (uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 | (uint16_t)data[2] << 8 | data[3];
+    if(data_type == 4) return 0;
+    if(data_type == 5) return 0;
+
+    return setting;
+}
+
+static uint8_t _cmd_find_arg(uint8_t argc, uint8_t *argv[], const char *arg)
+{
+    if (argc < 2) return 0;
+
+    uint8_t arg_buffer[32];
+    uint8_t arg_len = 0;
+
+    // Load argument from PROGMEM
+    while (arg_len < sizeof(arg_buffer) - 1)
+    {
+        uint8_t c = pgm_read_byte(arg + arg_len);
+        arg_buffer[arg_len++] = c;
+        if (c == '\0') break;
+    }
+    arg_buffer[sizeof(arg_buffer) - 1] = '\0';
+
+    for (uint8_t a = 0; a < argc; a++)
+    {
+        if (strcmp((const char *)argv[a], (const char *)arg_buffer) == 0)
+        {
+            if (a + 1 < argc)
+                return a + 1;
+            else
+                return 0;
+        }
+    }
+    return 0;
+}
+
+static uint8_t _cmd_find_arg_part(uint8_t argc, uint8_t *argv[], const char *arg)
+{
+    if (argc < 1) return 0;
+
+    uint8_t arg_buffer[32];
+    uint8_t arg_len = 0;
+
+    // Load argument key from PROGMEM
+    while (arg_len < sizeof(arg_buffer) - 1)
+    {
+        uint8_t c = pgm_read_byte(arg + arg_len);
+        if (c == '\0') break;
+        arg_buffer[arg_len++] = c;
+    }
+    arg_buffer[arg_len] = '\0';
+
+    for (uint8_t a = 0; a < argc; a++)
+    {
+        uint8_t i = 0;
+
+        while (1)
+        {
+            uint8_t c1 = argv[a][i];       // from argv
+            uint8_t c2 = arg_buffer[i];   // from key
+
+            // If key ends → match
+            if (c2 == '\0')
+            {
+                // Ensure next char in argv is '='
+                if (c1 == '=' || c1 == ':')
+                    return a;
+                else
+                    break;
+            }
+
+            // If mismatch → stop
+            if (c1 != c2)
+                break;
+
+            // If argv hits '=' before key ends → no match
+            if (c1 == '=' || c1 == ':')
+                break;
+
+            i++;
+        }
+    }
+
+    return 0;
+}
  
  /* ── Path-stack RAM helpers ─────────────────────────────────────────────── */
  
@@ -230,41 +665,6 @@
  
      wish_set_prompt(path_buf);
  }
- 
- /* =========================================================================
-  * Static helpers — forward declarations
-  * ========================================================================= */
- static uint16_t  _cols_per_row      (void);
- static uint16_t  _rows_on_screen    (void);
- static uint16_t  _max_stored_lines  (void);
- 
- static void      _ram_write_line    (uint16_t slot, const uint8_t *data, uint8_t len);
- static uint8_t   _ram_read_line     (uint16_t slot, uint8_t *out_buf);
- 
- static void      _evict_lines       (void);
- static void      _append_line       (const uint8_t *data, uint8_t len);
- static void      _commit_pending    (void);
- static void      _pending_append    (const uint8_t *data, uint8_t len);
- 
- static void      _redraw_output     (void);
- static void      _redraw_prompt_row (void);
- static void      _clear_row         (uint8_t row);
- static void      _draw_char_at      (uint8_t col, uint8_t row, uint8_t c,
-                                      uint16_t color);
- static void      _draw_str_at       (uint8_t col, uint8_t row,
-                                      const uint8_t *str, uint8_t len,
-                                      uint16_t color);
- 
- static void      _scroll_view_up    (uint8_t n);
- static void      _scroll_view_down  (uint8_t n);
- static void      _scroll_view_to_bottom(void);
- 
- static void      _handle_key        (uint8_t key);
- static void      _handle_enter      (void);
- static void      _process_command   (uint8_t *line);
- 
- static void      _pgm_to_sram       (const char *pgm_src, uint8_t *dst,
-                                      uint8_t max_len);
  
  /* =========================================================================
   * Inline geometry helpers
@@ -344,7 +744,7 @@
  static void _evict_lines(void)
  {
      uint16_t del   = console_ram_scroll_delete;
-     uint8_t  line_data_size = (uint8_t)(console_ram_line_size - 1);
+     //uint8_t  line_data_size = (uint8_t)(console_ram_line_size - 1);
      uint8_t  tmp[256];          /* max line data length = cols_per_row ≤ 255 */
  
      if (del > console_stored_lines) del = console_stored_lines;
@@ -530,12 +930,6 @@
 
              _commit_pending();
 
-             if (console_visible)
-             {
-                 _scroll_view_to_bottom();
-                 _redraw_output();
-                 _redraw_prompt_row();
-             }
              continue;
          }
 
@@ -559,13 +953,13 @@
  {
      if (!console_active) return;
 
-     uint8_t  sram_buf[256];
+     uint8_t  sram_buf[64];
      uint16_t offset = 0;
 
      while (1)
      {
          uint8_t chunk = 0;
-         while (chunk < 255)
+         while (chunk < 64)
          {
              uint8_t c = pgm_read_byte(text + offset + chunk);
              sram_buf[chunk] = c;
@@ -574,24 +968,169 @@
          }
 
          console_write_d(sram_buf);
-
+         
          if (sram_buf[chunk - 1] == '\0') break;
 
          offset += chunk;
      }
  }
 
+ void console_write_r(uint32_t addr)
+ {
+     if (!console_active) return;
+
+     uint8_t  sram_buf[64];
+     uint16_t offset = 0;
+
+     while (1)
+     {
+         ram_read(addr, sram_buf, 64);
+         uint8_t c = 0;
+         while (c < 64)
+         {
+             c++;
+             if (sram_buf[c] == '\0') break;
+         }
+
+         console_write_d(sram_buf);
+
+         if (sram_buf[c - 1] == '\0') break;
+
+         offset += c;
+     }
+ }
+
  void console_number(uint32_t number, uint8_t base, uint8_t * prefix, uint8_t * sufix)
 {
 	uint8_t a[16];
-	uint8_t b;
 
 	if(prefix != NULL) console_write_d(prefix);
 
-	ultoa(number, a, base);
+	ultoa(number, (char *)a, base);
 	console_write_d(a);
 
 	if(sufix != NULL) console_write_d(sufix);
+}
+
+void console_number_f(uint32_t number, uint8_t base, const char * prefix, const char * sufix)
+{
+	uint8_t a[16];
+
+	if(prefix != NULL) console_write_f(prefix);
+
+	ultoa(number, (char *)a, base);
+	console_write_d(a);
+
+	if(sufix != NULL) console_write_f(sufix);
+}
+
+void console_redraw()
+{
+    if (console_visible)
+    {
+        _scroll_view_to_bottom();
+        _redraw_output();
+        _redraw_prompt_row();
+    }
+}
+
+#define PRINTF_BUF_SIZE 128
+
+void _print_f(const char *fmt, ...)
+{
+    uint8_t buffer[PRINTF_BUF_SIZE];
+    uint8_t buf_i = 0;
+
+    uint8_t num8 = 0;
+    uint16_t num16 = 0;
+    uint32_t num32 = 0;
+
+    va_list args;
+    va_start(args, fmt);
+
+    while (*fmt) {
+        if (*fmt == '%') {
+            fmt++;
+
+            // Flush buffer before handling format
+            if (buf_i > 0) {
+                buffer[buf_i] = '\0';
+                console_write_d(buffer);
+                buf_i = 0;
+            }
+
+            // Handle specifiers
+            if (*fmt == 's') {
+                char *str = va_arg(args, char *);
+                console_write_d(str ? str : "(null)");
+            }
+            else if (*fmt == 'l' && *(fmt + 1) == 'u') {
+                fmt++; // skip 'u'
+                num32 = va_arg(args, uint32_t);
+                console_number(num32, 10, NULL, NULL);
+            }
+            else if (*fmt == 'l' && *(fmt + 1) == 'x') {
+                fmt++; // skip 'u'
+                num32 = va_arg(args, uint32_t);
+                console_number(num32, 16, "0x", NULL);
+            }
+            else if (*fmt == 'i' && *(fmt + 1) == 'u') {
+                fmt++; // skip 'u'
+                num16 = va_arg(args, uint16_t);
+                console_number(num16, 10, NULL, NULL);
+            }
+            else if (*fmt == 'i' && *(fmt + 1) == 'x') {
+                fmt++; // skip 'u'
+                num16 = va_arg(args, uint16_t);
+                console_number(num16, 16, "0x", NULL);
+            }
+            else if (*fmt == 'b' && *(fmt + 1) == 'u') {
+                fmt++; // skip 'u'
+                num8 = va_arg(args, uint8_t);
+                console_number(num8, 10, NULL, NULL);
+            }
+            else if (*fmt == 'b' && *(fmt + 1) == 'x') {
+                fmt++; // skip 'u'
+                num8 = va_arg(args, uint8_t);
+                console_number(num8, 16, "0x", NULL);
+            }
+            else if (*fmt == 'b' && *(fmt + 1) == 'b') {
+                fmt++; // skip 'u'
+                num8 = va_arg(args, uint8_t);
+                console_number(num8, 2, "0b", NULL);
+            }
+            else if (*fmt == '%') {
+                // literal %
+                if (buf_i < PRINTF_BUF_SIZE - 1) {
+                    buffer[buf_i++] = '%';
+                }
+            }
+            // (optional) add more specifiers here if needed
+        }
+        else {
+            // Normal character → buffer it
+            if (buf_i < PRINTF_BUF_SIZE - 1) {
+                buffer[buf_i++] = *fmt;
+            } else {
+                // Buffer full → flush
+                buffer[buf_i] = '\0';
+                console_write_d(buffer);
+                buf_i = 0;
+                buffer[buf_i++] = *fmt;
+            }
+        }
+
+        fmt++;
+    }
+
+    // Flush remaining buffer
+    if (buf_i > 0) {
+        buffer[buf_i] = '\0';
+        console_write_d(buffer);
+    }
+
+    va_end(args);
+    console_redraw();
 }
  
  /* =========================================================================
@@ -631,14 +1170,9 @@
      console_prompt[idx++] = ' ';
  
      /* "$ " or "# " */
-     if (console_root_mode)
-     {
-         console_prompt[idx++] = '#';
-     }
-     else
-     {
-         console_prompt[idx++] = '$';
-     }
+
+     console_prompt[idx++] = console_root_mode;
+
      console_prompt[idx++] = ' ';
      console_prompt[idx]   = 0;
  
@@ -870,6 +1404,7 @@
  
  static void _handle_key(uint8_t key)
  {
+    _redraw_cursor(0);
      /* --- Arrow keys --- */
      if (key == KEY_UP)
      {
@@ -913,7 +1448,6 @@
      /* --- Backspace --- */
      if (key == KEY_BACKSPACE)
      {
-         _redraw_cursor(0);
          if (console_input_index > 0)
          {
              /* Shift everything left of cursor */
@@ -931,7 +1465,6 @@
      /* --- Delete --- */
      if (key == KEY_DEL)
      {
-         _redraw_cursor(0);
          uint8_t end = (uint8_t)strlen((char *)console_input_buffer);
          if (console_input_index < end)
          {
@@ -946,7 +1479,6 @@
      /* --- Printable ASCII --- */
      if (key >= 0x20 && key <= 0x7E)
      {
-         _redraw_cursor(0);
          uint8_t end = (uint8_t)strlen((char *)console_input_buffer);
          if (end < 254) /* leave 1 byte for null terminator */
          {
@@ -997,12 +1529,7 @@
      console_input_col_offset = 0;
  
      /* Snap view to bottom and refresh */
-     if (console_visible)
-     {
-         _scroll_view_to_bottom();
-         _redraw_output();
-         _redraw_prompt_row();
-     }
+     console_redraw();
  }
  
  /* =========================================================================
@@ -1024,11 +1551,31 @@
  /* Forward declarations of built-in handlers */
  static void _cmd_clear (uint8_t argc, uint8_t *argv[]);
  static void _cmd_echo  (uint8_t argc, uint8_t *argv[]);
- static void _cmd_help  (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_time  (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_man   (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_sysop (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_chpwd (uint8_t argc, uint8_t *argv[]);
  static void _cmd_ls    (uint8_t argc, uint8_t *argv[]);
  static void _cmd_cd    (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_rm    (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_mk    (uint8_t argc, uint8_t *argv[]);
+ static void _cmd_ram_allocate(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_ram_free(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_mem_store(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_mem_read(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_save_setting(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_load_setting(uint8_t argc, uint8_t *argv[]);
  static void _cmd_mem_check (uint8_t argc, uint8_t *argv[]);
  static void _cmd_ram_stat(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_sd_stat(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_entry_to_ram(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_ram_to_sd(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_show_cluster(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_dir_to_ram(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_ram_to_dir(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_fat_data(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_mem_copy(uint8_t argc, uint8_t *argv[]);
+ static void _cmd_mem_fill(uint8_t argc, uint8_t *argv[]);
  
  /* ── Command table ──────────────────────────────────────────────────────── */
  typedef struct
@@ -1039,38 +1586,82 @@
  
  static const char CMD_CLEAR[]      PROGMEM = "clear";
  static const char CMD_ECHO[]       PROGMEM = "echo";
- static const char CMD_HELP[]       PROGMEM = "help";
+ static const char CMD_TIME[]       PROGMEM = "time";
+ static const char CMD_MAN[]        PROGMEM = "man";
+ static const char CMD_SYSOP[]      PROGMEM = "sysop";
+ static const char CMD_CHPWD[]      PROGMEM = "chpwd";
+ static const char CMD_SCRIPT[]     PROGMEM = "script";
  static const char CMD_LS[]         PROGMEM = "ls";
  static const char CMD_CD[]         PROGMEM = "cd";
+ static const char CMD_RM[]         PROGMEM = "rm";
+ static const char CMD_MK[]         PROGMEM = "mk";
+ static const char CMD_RALLOC[]     PROGMEM = "ralloc";
+ static const char CMD_RFREE[]      PROGMEM = "rfree";
+ static const char CMD_RWRITE[]     PROGMEM = "memw";
+ static const char CMD_RREAD[]      PROGMEM = "memr";
+ static const char CMD_SVSETT[]     PROGMEM = "svsett";
+ static const char CMD_LDSETT[]     PROGMEM = "ldsett";
  static const char CMD_MEM[]        PROGMEM = "memchk";
  static const char CMD_BITMAP[]     PROGMEM = "bitmap";
  static const char CMD_TEXTVW[]     PROGMEM = "text";
  static const char CMD_RAMSTAT[]    PROGMEM = "ramstat";
+ static const char CMD_SDSTAT[]     PROGMEM = "sdstat";
  static const char CMD_MKFILE[]     PROGMEM = "mkfile";
  static const char CMD_WFILE[]      PROGMEM = "wfile";
+ static const char CMD_TEXTED[]     PROGMEM = "fwriter";
+ static const char CMD_FATTORAM[]   PROGMEM = "fat-to-ram";
+ static const char CMD_RAMTOFAT[]   PROGMEM = "ram-to-fat";
+ static const char CMD_RCLUSTER[]   PROGMEM = "cluster-info";
+ static const char CMD_RLOADDIR[]   PROGMEM = "load-dir";
+ static const char CMD_RWRDIR[]     PROGMEM = "write-dir";
+ static const char CMD_FATDATA[]    PROGMEM = "fatdata";
+ static const char CMD_MEMCPY[]     PROGMEM = "memcpy";
+ static const char CMD_MEMFILL[]    PROGMEM = "memfill";
  
  /* Sentinel-terminated.  Add new built-ins here. */
  static const wish_cmd_entry_t wish_cmd_table[] PROGMEM =
  {
-     { CMD_CLEAR,   _cmd_clear            },
-     { CMD_ECHO,    _cmd_echo             },
-     { CMD_HELP,    _cmd_help             },
-     { CMD_LS,      _cmd_ls               },
-     { CMD_CD,      _cmd_cd               },
-     { CMD_MEM,     _cmd_mem_check        },
-     { CMD_BITMAP,  pgm_show_bitmap       },
-     { CMD_TEXTVW,  pgm_file_reader       },
-     { CMD_RAMSTAT, _cmd_ram_stat         },
-     { CMD_MKFILE,  pgm_mk_file           },
-     { CMD_WFILE,   pgm_app_file          },
-     { 0,         0                       }  /* sentinel */
+     { CMD_CLEAR,    _cmd_clear             },
+     { CMD_ECHO,     _cmd_echo              },
+     { CMD_TIME,     _cmd_time              },
+     { CMD_MAN,      _cmd_man               },
+     { CMD_SYSOP,    _cmd_sysop             },
+     { CMD_CHPWD,    _cmd_chpwd             },
+     { CMD_SCRIPT,   _cmd_script            },
+     { CMD_LS,       _cmd_ls                },
+     { CMD_CD,       _cmd_cd                },
+     { CMD_RM,       _cmd_rm                },
+     { CMD_MK,       _cmd_mk                },
+     { CMD_RALLOC,   _cmd_ram_allocate      },
+     { CMD_RFREE,    _cmd_ram_free          },
+     { CMD_RWRITE,   _cmd_mem_store         },
+     { CMD_RREAD,    _cmd_mem_read          },
+     { CMD_SVSETT,   _cmd_save_setting      },
+     { CMD_LDSETT,   _cmd_load_setting      },
+     { CMD_MEM,      _cmd_mem_check         },
+     { CMD_BITMAP,   pgm_show_bitmap        },
+     { CMD_TEXTVW,   pgm_file_reader        },
+     { CMD_RAMSTAT,  _cmd_ram_stat          },
+     { CMD_SDSTAT,   _cmd_sd_stat           },
+     { CMD_MKFILE,   pgm_mk_file            },
+     { CMD_WFILE,    pgm_app_file           },
+     { CMD_TEXTED,   pgm_text_editor        },
+     { CMD_FATTORAM, _cmd_fat_entry_to_ram  },
+     { CMD_RAMTOFAT, _cmd_fat_ram_to_sd     },
+     { CMD_RCLUSTER, _cmd_fat_show_cluster  },
+     { CMD_RLOADDIR, _cmd_fat_dir_to_ram    },
+     { CMD_RWRDIR,   _cmd_fat_ram_to_dir    },
+     { CMD_FATDATA,  _cmd_fat_data          },
+     { CMD_MEMCPY,   _cmd_mem_copy          },
+     { CMD_MEMFILL,  _cmd_mem_fill          },
+     { 0,         0                         }  /* sentinel */
  };
  
  /**
   * @brief  Parse line into argc/argv and dispatch to handler.
   *         argv[i] point into a local copy — do NOT store across frames.
   */
- static void _process_command(uint8_t *line)
+ void _process_command(uint8_t *line)
  {
      static uint8_t  line_copy[256];
      static uint8_t *argv[WISH_MAX_ARGS + 1];
@@ -1129,6 +1720,7 @@
          if (match)
          {
              fn(argc, argv);
+             //console_redraw();
              return;
          }
          entry_idx++;
@@ -1143,7 +1735,7 @@
  
      /* Append PROGMEM " : command not found" */
      uint8_t suffix[32];
-     _pgm_to_sram(PSTR_CMD_NOTFOUND, suffix, sizeof(suffix));
+     _pgm_to_sram(PSTR(": command not found\n"), suffix, sizeof(suffix));
      uint8_t slen = (uint8_t)strlen((char *)suffix);
      memcpy(err + epos, suffix, slen);
      epos += slen;
@@ -1172,7 +1764,7 @@
  
  static void _cmd_echo(uint8_t argc, uint8_t *argv[])
  {
-     if (argc < 2) { console_write_d((uint8_t *)""); return; }
+     if (argc < 2) { return; }
  
      /* Re-join argv[1..] with spaces into a single output line */
      uint8_t buf[256];
@@ -1188,20 +1780,109 @@
      }
      buf[pos] = 0;
      console_write_d(buf);
+     console_write_f(PSTR_NEWLINE);
  }
  
- static const char HELP_LINE1[] PROGMEM = "wish - Wizard Shell\n";
- static const char HELP_LINE2[] PROGMEM = "Built-in commands: clear, echo, help, ls, cd\n";
- static const char HELP_LINE3[] PROGMEM = "UP/DOWN: scroll output  LEFT/RIGHT: move cursor\n";
- static const char HELP_LINE4[] PROGMEM = "cd [dir] : enter dir  |  cd : go up one level\n";
- 
- static void _cmd_help(uint8_t argc, uint8_t *argv[])
+ static void _cmd_time(uint8_t argc, uint8_t *argv[])
  {
-     (void)argc; (void)argv;
-     console_write_f(HELP_LINE1);
-     console_write_f(HELP_LINE2);
-     console_write_f(HELP_LINE3);
-     console_write_f(HELP_LINE4);
+     datetime_components_t* components;
+     if(argc == 1) // Display time
+     {
+        console_write_f(PSTR("Date : "));
+        rtc_time_date_to_components(system_time, system_date, components);
+        console_number_f(components->year, 10, NULL, PSTR_SPACE);
+        console_number_f(components->month, 10, NULL, PSTR_SPACE);
+        console_number_f(components->day, 10, NULL, PSTR_SPACE);
+        console_number_f(components->hour, 10, NULL, PSTR_SPACE);
+        console_number_f(components->minute, 10, NULL, PSTR_NEWLINE);
+        return;
+     }
+
+     if(argc > 2 && argv[2][11] == ':')
+     {
+        if(!_parse_datetime_string(argv[2], components)) { console_write_f(PSTR("time : error\n")); return; }
+        components_to_rtc_time_date(components, &system_time, &system_date);
+     }
+
+     console_write_f(PSTR("time : usage time mmddyyyy hh:mm\n"));
+ }
+
+ static void _cmd_man(uint8_t argc, uint8_t *argv[])
+ {
+    if(argc < 2) { console_write_f(PSTR("man : missing argument\n")); return; }
+    if(!man_directory_cluster) { console_write_f(PSTR("man : missing man directory\n")); return; }
+    uint32_t fat_dir_old = FAT_working_dir_cluster_old;
+    uint32_t fat_dir = FAT_working_dir_cluster;
+    FAT_working_dir_cluster = 0;
+    FAT_working_dir_cluster_old = 0;
+    if(!FAT_load_directory("man"))
+    {
+        FAT_working_dir_cluster = fat_dir;
+        FAT_working_dir_cluster_old = fat_dir_old;
+        console_write_f(PSTR("man : error opening directory\n"));
+        return;
+    }
+    uint8_t man_filename[12];
+    for(uint8_t a = 0; a < 12; a++) man_filename[a] = 0;
+    memcpy(man_filename, argv[1], 8);
+    uint8_t a = 0;
+    while(man_filename[a]) a++;
+    man_filename[a] = '.';
+    man_filename[a + 1] = 'm';
+    man_filename[a + 2] = 'a';
+    man_filename[a + 3] = 'n';
+    if(!FAT_open_file(man_filename))
+    {
+        FAT_working_dir_cluster = fat_dir;
+        FAT_working_dir_cluster_old = fat_dir_old;
+        console_write_f(PSTR("man : error opening man pages\n"));
+        return;
+    }
+    a = 1;
+    uint8_t file_bf[256];
+    while(a)
+    {
+        a = FAT_read_file_line(NULL, file_bf);
+        console_write_d(file_bf);
+        if(FAT_error_log == FAT_EOF) break;
+    }
+    FAT_close_file();
+    FAT_working_dir_cluster = fat_dir;
+    FAT_working_dir_cluster_old = fat_dir_old;
+ }
+
+ #define SYSOP_PW_ADDR 0x7e0
+
+ static void _cmd_chpwd (uint8_t argc, uint8_t *argv[])
+ {
+    if(argc < 2) { console_write_f(PSTR("chpwd : missing argument\n")); return; }
+    if(!_has_master_key() && eeprom_read_byte(SYSOP_PW_ADDR) != 0xff) { console_write_f(PSTR("chpwd : permission denied\n")); return; }
+    
+    uint8_t error = 0;
+    uint8_t length = strlen((const char *)argv[1]);
+    eeprom_write_byte(SYSOP_PW_ADDR, length);
+    if(eeprom_read_byte(SYSOP_PW_ADDR) != length) error = 1;
+    for(uint8_t a = 0; a < length; a ++)
+    {
+        if(eeprom_read_byte(SYSOP_PW_ADDR + a + 1) != argv[1][a] && !error) eeprom_write_byte(SYSOP_PW_ADDR + a + 1, argv[1][a]);
+        if(eeprom_read_byte(SYSOP_PW_ADDR + a + 1) != argv[1][a]) error = 1;
+    }
+    if(error)
+    {
+        console_write_f(PSTR("chpwd : eeprom write error\n"));
+        console_write_f(PSTR("Pwd is stored in 0x7E0 (length + string) try manual write\n"));
+    }
+ }
+
+ static void _cmd_sysop (uint8_t argc, uint8_t *argv[])
+ {
+    if (argc < 2) { console_root_mode = '$'; _path_rebuild_prompt(); return; }
+    uint8_t length = eeprom_read_byte(SYSOP_PW_ADDR);
+    if(length == 0xff) { console_write_f(PSTR("sysop : password not set, use chpwd first\n")); return; }
+    for(uint8_t a = 0; a < length; a++)
+      if(eeprom_read_byte(SYSOP_PW_ADDR + a + 1) != argv[1][a]) { console_write_f(PSTR("sysop : incorrect password\n")); return; }
+    console_root_mode = '#';
+    _path_rebuild_prompt();
  }
  
  /* =========================================================================
@@ -1272,7 +1953,7 @@
  /* =========================================================================
   * ls — list current directory
   *
-  * Calls FAT_count_files_in_directory(NULL) then iterates with
+  * Calls FAT_count_files_in_directory() then iterates with
   * FAT_get_file_name(index, buf).  Each 32-byte entry is interpreted as a
   * dir_Structure; attribute byte is at offset 11 (0-based).
   *
@@ -1300,19 +1981,19 @@
      uint8_t  line_buf[64];           /* assembled output line      */
  
      /* Count entries in the current working directory. */
-     if (!FAT_count_files_in_directory(NULL, &file_count))
+     if (!FAT_count_files_in_directory(&file_count))
      {
          /* Check for the no-SD-card error specifically. */
          if (FAT_error_log == FAT_ERR_NO_SD_CARD)
-             console_write_f(PSTR_LS_NO_SD);
+             console_write_f(PSTR("ls: no SD card\n"));
          else
-             console_write_f(PSTR_LS_ERR);
+             console_write_f(PSTR("ls: error reading directory\n"));
          return;
      }
  
      if (file_count == 0)
      {
-         console_write_f(PSTR_LS_EMPTY);
+         console_write_f(PSTR("(empty)\n"));
          return;
      }
  
@@ -1386,6 +2067,14 @@
   * call FAT_load_directory / FAT_unload_directory and keep the name stack
   * in sync for prompt reconstruction.
   * ========================================================================= */
+
+
+  static const char PSTR_CD_NO_SD[]    PROGMEM = "cd: no SD card\n";
+  static const char PSTR_CD_NOTFOUND[] PROGMEM = "cd: no such directory: ";
+  static const char PSTR_CD_NOTADIR[]  PROGMEM = "cd: not a directory: ";
+  static const char PSTR_CD_MAXDEPTH[] PROGMEM = "cd: max directory depth reached\n";
+  static const char PSTR_CD_ERR[]      PROGMEM = "cd: error\n";
+
  static void _cmd_cd(uint8_t argc, uint8_t *argv[])
  {
      /* ── No argument or ".." → go up one level ──────────────────────── */
@@ -1434,7 +2123,7 @@
      uint8_t  found       = 0;
      uint8_t  found_is_dir = 0;
  
-     if (!FAT_count_files_in_directory(NULL, &file_count))
+     if (!FAT_count_files_in_directory(&file_count))
      {
          console_write_f((FAT_error_log == FAT_ERR_NO_SD_CARD)
                          ? PSTR_CD_NO_SD : PSTR_CD_ERR);
@@ -1555,15 +2244,896 @@
      _path_rebuild_prompt();
  }
 
+ static void _cmd_rm(uint8_t argc, uint8_t *argv[])
+ {
+     if(argc < 3 || argv[1][0] != '-' || argv[1][1] != 'r' || (argv[1][2] != 'f' && argv[1][2] != 'd') || argv[1][3] != 0)
+     {
+        // Missing arguments or incorrect usage
+        console_write_f(PSTR("rm : usage (-rf remove file / -rd remove dir) <name>\n"));
+        return;
+     }
+ 
+     uint8_t *name = argv[2];
+
+     if(argv[1][2] == 'f') // Remove file
+     {
+        if(FAT_delete_file(name)) { console_write_f(PSTR("File deleted...\n"));  return; }
+        console_write_f(PSTR("File not found...\n"));
+        return;
+     }
+ 
+     if(argv[1][2] == 'd') // Remove directory
+     {
+        if(FAT_delete_dir(name))
+            { console_write_f(PSTR("Directory deleted...\n"));  return; }
+        switch (FAT_error_log) 
+        {
+            case FAT_ERR_DIR_NOT_EMPTY : console_write_f(PSTR("Directory not empty...\n")); break;
+            case FAT_ERR_INVALID_NAME : console_write_f(PSTR("Directory name invalid...\n")); break;            
+            case FAT_ERR_DENIED : console_write_f(PSTR("Access denied...\n"));break;                  
+            case FAT_ERR_DIR_NOT_FOUND : console_write_f(PSTR("Directory not found...\n")); break;
+            default :   console_write_f(PSTR("Unkown error..."));
+                        console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE); 
+                        break;
+        }
+        return;
+     }
+
+     return;
+ }
+
+ static void _cmd_mk(uint8_t argc, uint8_t *argv[])
+ {
+     if(argc < 2)
+     {
+        // Missing arguments or incorrect usage
+        console_write_f(PSTR("mk : usage -> mk <dirname>\n"));
+        return;
+     }
+ 
+     uint8_t *dirname = argv[1];
+     if(FAT_create_dir(dirname))
+     {
+        console_write_f(PSTR("Directory created...\n"));
+        return;
+     }
+     console_write_f(PSTR("Directory already exists...\n"));
+     return;
+ }
+
+// ============================================================
+//  RAM console commands
+//
+//  ramalloc <size>               – allocate <size> bytes, print address
+//  free     <address>            – free allocation at <address>
+//  store    <address> <b:b:...>  – write colon-separated hex bytes to RAM
+//  read     <address> <count>    – hex+ASCII dump of <count> bytes from RAM
+// ============================================================
+
+// ------------------------------------------------------------
+//  ramalloc <size>
+//  Allocates <size> bytes and prints the base address on success.
+// ------------------------------------------------------------
+static void _cmd_ram_allocate(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("ramalloc : usage -> ramalloc <size in bytes> <key>\n"));
+        return;
+    }
+
+    uint32_t size  = strtoul((const char *)argv[1], NULL, 0);
+    if (size == 0) {
+        console_write_f(PSTR("ramalloc : size must be > 0\n"));
+        return;
+    }
+
+    uint8_t key  = strtoul((const char *)argv[2], NULL, 0);
+
+    uint32_t addr = ram_allocate_safe(size, key);
+    if (addr) {
+        console_write_f(PSTR("Allocated "));
+        console_number_f(size, 10, NULL, PSTR(" bytes at 0x"));
+        console_number_f(addr, 16, NULL, PSTR(" key 0x"));
+        console_number_f(key, 16, NULL, PSTR_NEWLINE);
+        return;
+    }
+
+    console_write_f(PSTR("Allocation failed...\n"));
+}
+
+// ------------------------------------------------------------
+//  free <address>
+//  Frees the allocation whose base address is <address>.
+// ------------------------------------------------------------
+static void _cmd_ram_free(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3 && !_has_master_key()) {
+        console_write_f(PSTR("free : usage -> free <address> <key>\n"));
+        return;
+    }
+
+    if (argc < 2 && _has_master_key()) {
+        console_write_f(PSTR("free : usage -> free <address>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+
+    if(_has_master_key()) { ram_free(addr); return; }
+
+    uint8_t key  = strtoul((const char *)argv[2], NULL, 0);
+
+    if(!ram_free_safe(addr, key))
+    {
+        console_write_f(PSTR("store : permission denied\n"));
+        return;
+    }
+}
+
+// ------------------------------------------------------------
+//  store <address> <b0:b1:...:bN>
+//
+//  Writes one or more bytes (colon-separated hex values) into RAM
+//  starting at <address>.
+//
+//  Example:
+//    store 0x1000 48:65:6C:6C:6F   -> writes "Hello" at 0x1000
+// ------------------------------------------------------------
+static void _cmd_mem_store(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("store : usage -> store <address> <data:data:...:data>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint8_t *token = argv[2];           // colon-separated hex byte string
+    uint16_t count = 0;
+    uint8_t key = 0;
+
+    if(argc > 3)
+    {
+        if(argv[3][0] != '-' || argv[3][1] != 'k')
+        {
+            console_write_f(PSTR("store : argument error\n"));
+            return;
+        }
+        key = strtoul((const char *)argv[4], NULL, 0);
+    }
+
+    if((uint8_t)(addr >> 24) == 0x20) {
+        console_write_f(PSTR("store : flash space write forbidden\n"));
+        return;
+    }
+
+    // Walk the token string, parse each hex byte, write immediately.
+    // Accepted formats per byte: "FF", "ff", "0xFF", "0xff"
+    while (*token) {
+        // Skip optional "0x" / "0X" prefix
+        if (token[0] == '0' && (token[1] == 'x' || token[1] == 'X'))
+            token += 2;
+
+        // Parse up to 2 hex digits
+        uint8_t value = 0;
+        uint8_t digits = 0;
+        while (digits < 2 && *token && *token != ':') {
+            uint8_t c = *token;
+            uint8_t nibble;
+            if      (c >= '0' && c <= '9') nibble = c - '0';
+            else if (c >= 'a' && c <= 'f') nibble = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') nibble = c - 'A' + 10;
+            else {
+                // Non-hex character – report and abort
+                console_write_f(PSTR("store : invalid hex character '"));
+                uint8_t bad[2] = { c, '\0' };
+                console_write_d(bad);
+                console_write_f(PSTR("'\n"));
+                return;
+            }
+            value = (value << 4) | nibble;
+            token++;
+            digits++;
+        }
+
+        if (digits == 0) {
+            // Empty field (e.g. trailing colon) – just skip
+            if (*token == ':') { token++; continue; }
+            break;
+        }
+
+        if(_has_master_key()) {
+            if((uint8_t)(addr >> 24) == 0x80) ram_write_byte(addr + count, value);
+            if((uint8_t)(addr >> 24) == 0x40) eeprom_write_byte((uint16_t)(addr + count), value);
+            if((uint8_t)(addr >> 24) == 0x00) mcu_memory_store((uint16_t)(addr + count), value);
+        }
+        if(!_has_master_key()) {
+            if(!ram_write_byte_safe(addr + count, value, key))
+            {
+                console_write_f(PSTR("store : permission denied\n"));
+                return;
+            }
+        }
+        count++;
+
+        // Skip separator
+        if (*token == ':') token++;
+    }
+
+    if (count == 0) {
+        console_write_f(PSTR("store : no valid bytes found in data argument\n"));
+        return;
+    }
+
+    console_write_f(PSTR("RAM stored "));
+    console_number_f(count, 10, NULL, PSTR(" byte(s) at 0x"));
+    console_number_f(addr,  16, NULL, PSTR_NEWLINE);
+}
+
+// ------------------------------------------------------------
+//  read <address> <count>
+//
+//  Dumps <count> bytes from RAM starting at <address>.
+//  Output is formatted as a classic hex+ASCII dump:
+//
+//  0x00001000  48 65 6C 6C 6F 20 57 6F  72 6C 64 0A -- -- -- --  Hello Wo rld.....
+//
+//  Each row shows 16 bytes split into two groups of 8, followed
+//  by the printable ASCII representation (non-printable → '.').
+// ------------------------------------------------------------
+
+static void _cmd_mem_read(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("read : usage -> read <address> <count>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint32_t count = strtoul((const char *)argv[2], NULL, 0);
+
+    if (count == 0) {
+        console_write_f(PSTR("read : count must be > 0\n"));
+        return;
+    }
+
+    // Hex digit LUT (in SRAM – only 16 bytes, not worth PROGMEM)
+    static const uint8_t hex_chars[] = "0123456789ABCDEF";
+
+    uint32_t offset = 0;
+    while (offset < count) {
+        // ---- Address column ----
+        console_write_f(PSTR("0x"));
+        console_number(addr + offset, 16, NULL, (uint8_t *)"  ");
+
+        // ---- Hex columns (16 bytes per row, two groups of 8) ----
+        uint8_t row[8];
+        uint8_t row_len = 0;
+
+        for (uint8_t i = 0; i < 8; i++) {
+            if (offset + i < count) {
+                if((uint8_t)(addr >> 24) == 0x80) row[i] = ram_read_byte(addr + offset + i);
+                if((uint8_t)(addr >> 24) == 0x40) row[i] = eeprom_read_byte((uint16_t)(addr + offset + i));
+                if((uint8_t)(addr >> 24) == 0x20) row[i] = pgm_read_byte((addr + offset + i) & 0xffffff);
+                if((uint8_t)(addr >> 24) == 0x00) row[i] = mcu_memory_read((uint16_t)(addr + offset + i));
+                row_len++;
+            } else {
+                row[i] = 0;   // padding
+            }
+
+            if (row_len > i) {
+                // Print byte as two hex digits
+                uint8_t hex[4];
+                hex[0] = hex_chars[(row[i] >> 4) & 0x0F];
+                hex[1] = hex_chars[ row[i]        & 0x0F];
+                hex[2] = ' ';
+                hex[3] = '\0';
+                console_write_d(hex);
+            } else {
+                // Past end of data – print placeholder
+                console_write_f(PSTR("-- "));
+            }
+
+            // Extra space between the two groups of 8
+            if (i == 7) console_write_f(PSTR(" "));
+        }
+
+        // ---- ASCII column ----
+        console_write_f(PSTR(" |"));
+        for (uint8_t i = 0; i < 8; i++) {
+            uint8_t ch;
+            if (offset + i < count) {
+                ch = row[i];
+                if (ch < 0x20 || ch > 0x7E) ch = '.';
+            } else {
+                ch = ' ';
+            }
+            uint8_t out[2] = { ch, '\0' };
+            console_write_d(out);
+        }
+        console_write_f(PSTR("|\n"));
+
+        offset += 8;
+    }
+
+    // Summary line
+    console_write_f(PSTR("Read "));
+    console_number_f(count, 10, NULL, PSTR(" byte(s) from 0x"));
+    console_number_f(addr,  16, NULL, PSTR_NEWLINE);
+}
+
+// Helper function to get data size based on type
+static uint8_t get_data_type(const char* type_str) {
+    if (strcmp(type_str, "-t:u8") == 0) return 1;
+    if (strcmp(type_str, "-t:u16") == 0) return 2;
+    if (strcmp(type_str, "-t:u32") == 0) return 3;
+    if (strcmp(type_str, "-t:db") == 0) return 4;
+    if (strcmp(type_str, "-t:str") == 0) return 5; // String length will be determined by data
+    return 0;
+}
+
+
+static void _cmd_save_setting(uint8_t argc, uint8_t *argv[]) 
+{
+    if(!_has_master_key())
+    {
+        console_write_f(PSTR("svsett : permission denied\n"));
+        return;
+    }
+
+    if (argc < 5) {
+        console_write_f(PSTR("svsett : check man pages for usage\n"));
+        return;
+    }
+    
+    // Parse setting index
+    uint8_t setting_index = _parse_uint16((const char*)argv[1]);
+    
+    if(!setting_index)
+    {
+        console_write_f(PSTR("svsett : invalid setting index\n"));
+        return;
+    }
+    
+    // Calculate EEPROM address for this setting
+    uint16_t eeprom_addr = settings_start_addr + ((setting_index - 1) * EEPROM_SLOT_SIZE); // Placeholder calculation
+    
+    // Check if we have enough space
+    if ((eeprom_addr + EEPROM_SLOT_SIZE) > settings_max_size)
+    {
+        console_write_f(PSTR("svsett : EEPROM full\n"));
+        return; // Not enough space
+    }
+    
+    // Parse data type
+
+    uint8_t data_type = get_data_type((const char*)argv[_cmd_find_arg_part(argc, argv, PSTR("-t"))]);
+    if(!data_type)
+    {
+        console_write_f(PSTR("svsett : data type error\n"));
+        return; // Not enough space
+    }
+    
+    // Check for RAM modifier
+    uint32_t ram_addr = 0;
+    uint8_t data_location = 0;
+    uint8_t use_ram = _cmd_find_arg(argc, argv, PSTR("-ram"));
+    
+    if(use_ram) ram_addr = _parse_hex_string((const char*)argv[use_ram]);
+    
+    if(!use_ram) // Get the value from argv
+    {
+        data_location = _cmd_find_arg(argc, argv, PSTR("-data"));
+        if(!data_location)
+        {
+            console_write_f(PSTR("svsett : invalid arguments\n"));
+            return; // Not enough space
+        }
+    }
+
+    // Save settings format: [ setting index, setting length, data type, data, data .... data ]
+    uint8_t setting_data[EEPROM_SLOT_SIZE];
+
+    setting_data[0] = data_type;
+
+    // Parse data based on type
+    if(data_type < 4) // uint8_t to uint32_t
+    {
+        uint32_t data = 0;
+        if(!use_ram) data = strtoul((const char *)argv[data_location], NULL, 0);
+        if(data_type == 1) { if(use_ram) data = ram_read_byte(ram_addr); setting_data[1] = (uint8_t)data; }
+        if(data_type == 2) { if(use_ram) data = ram_read_word(ram_addr); setting_data[1] = (uint8_t)(data >> 8); setting_data[2] = (uint8_t)data; }
+        if(data_type == 3) { if(use_ram) data = ram_read_dword(ram_addr); setting_data[1] = (uint8_t)(data >> 24); setting_data[2] = (uint8_t)(data >> 16); setting_data[3] = (uint8_t)(data >> 8); setting_data[4] = (uint8_t)data; }
+    }
+    if(data_type == 4) // Double
+    {
+        double value;
+        if(!use_ram) value = _parse_double((const char*)argv[2]);
+        if(use_ram) value = ram_read_dword(ram_addr);
+        memcpy(&setting_data[1], &value, 4);
+    }
+    if(data_type == 5) // String
+    {
+        uint8_t a = 0;
+        while(1)
+        {
+            if(!use_ram) setting_data[a + 1] = argv[data_location][a];
+            if(use_ram) setting_data[a + 1] = ram_read_byte(ram_addr + a);
+            a++;
+            if(setting_data[a - 1] == '\0') break;
+        }
+    }
+
+    for(uint8_t a = 0; a < EEPROM_SLOT_SIZE; a++) eeprom_write_byte(eeprom_addr + a, setting_data[a]);
+
+    _cmd_load_setting(2, argv); // For check send the first 2 arguments (inst + index) to see if the setting was saved successfully
+}
+
+static const char PSTR_SETTING1[]      PROGMEM = "Console back color";
+static const char PSTR_SETTING2[]      PROGMEM = "Console text color";
+static const char PSTR_SETTING3[]      PROGMEM = "Console prompt color";
+static const char PSTR_SETTING4[]      PROGMEM = "Console buffer size";
+static const char PSTR_SETTING5[]      PROGMEM = "Console text type";
+static const char PSTR_SETTING6[]      PROGMEM = "Console evict line count";
+static const char PSTR_SETTING7[]      PROGMEM = "Console input buffer size";
+static const char PSTR_SETTING8[]      PROGMEM = "";
+static const char PSTR_SETTING9[]      PROGMEM = "";
+
+const char * const PSTR_TABLE[] PROGMEM =
+{
+    PSTR_SETTING1,
+    PSTR_SETTING2,
+    PSTR_SETTING3,
+    PSTR_SETTING4,
+    PSTR_SETTING5,
+    PSTR_SETTING6,
+    PSTR_SETTING7,
+    PSTR_SETTING8,
+    PSTR_SETTING9
+};
+
+static void _cmd_load_setting(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 2)
+    {
+        console_write_f(PSTR("ldsett : check man pages for usage\n"));
+        return;
+    }
+    
+    // Parse setting index
+    uint16_t setting_index = _parse_uint16((const char*)argv[1]);
+
+    if(!setting_index)
+    {
+        console_write_f(PSTR("ldsett : invalid setting index\n"));
+        return;
+    }
+
+    uint32_t store_addr = 0;
+    uint8_t key = 0;
+
+    if(argc > 2)
+    {
+        uint8_t c = _cmd_find_arg(argc, argv, PSTR("-ram"));
+        if(!c)
+        {
+            console_write_f(PSTR("ldsett : unknown argument\n"));
+            return;
+        }
+
+        store_addr = strtoul((const char *)argv[c], NULL, 0);
+        if(store_addr < 0x80000000)
+        {
+            console_write_f(PSTR("ldsett : invalid RAM address\n"));
+            return;
+        }
+
+        c = _cmd_find_arg(argc, argv, PSTR("-k"));
+
+        if(!c && !_has_master_key())
+        {
+            console_write_f(PSTR("ldsett : missing key\n"));
+            return;
+        }
+
+        key = strtoul((const char *)argv[c], NULL, 0);
+    }
+
+    // Calculate EEPROM address for this setting
+    uint16_t eeprom_addr = settings_start_addr + ((setting_index - 1) * EEPROM_SLOT_SIZE); // Placeholder calculation
+    
+    // Check if we have enough space
+    if ((eeprom_addr + EEPROM_SLOT_SIZE) > settings_max_size)
+    {
+        console_write_f(PSTR("ldsett : invalid index\n"));
+        return; // Invalid index or not enough space
+    }
+
+    const char *pstr_addr = (const char *)pgm_read_ptr(&PSTR_TABLE[setting_index - 1]);
+    console_write_f(pstr_addr);
+    console_write_f(PSTR(" = "));
+    
+    uint8_t data_type = eeprom_read_byte(eeprom_addr);
+
+    if(!data_type || data_type > 5)
+    {
+        console_write_f(PSTR("Invalid slot\n"));
+        return;
+    }
+
+    uint8_t data[EEPROM_SLOT_SIZE];
+    for(uint8_t a = 0; a < (EEPROM_SLOT_SIZE - 1); a++) data[a] = eeprom_read_byte(eeprom_addr + a + 1);
+    if(!store_addr)
+    {
+        if(data_type == 1) console_number_f(data[0], 16, PSTR_0x, NULL);
+        if(data_type == 2) console_number_f((uint16_t)data[0] << 8 | data[1], 16, PSTR_0x, NULL);
+        if(data_type == 3) console_number_f((uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 | (uint16_t)data[2] << 8 | data[3], 16, PSTR_0x, NULL);
+        if(data_type == 4) console_write_f(PSTR("Double not implemented yet\n"));
+        if(data_type == 5) console_write_d(data);
+        console_write_f(PSTR_NEWLINE);
+        return;
+    }
+
+    uint8_t size = 0;
+    if(data_type == 1) size = 1;
+    if(data_type == 2) size = 2;
+    if(data_type == 3) size = 4;
+    if(data_type == 4) size = 4;
+
+    if(size)
+    {
+        for(uint8_t a = 0; a < size; a++)
+        {
+            if(!_has_master_key()) 
+            if(!ram_write_byte_safe(store_addr, data[a], key))
+            {
+                console_write_f(PSTR("Permission denied\n"));
+                return;
+            }
+            if(_has_master_key()) ram_write_byte(store_addr, data[a]);
+        }
+        return;
+    }
+    if(data_type == 5)
+    {
+        uint8_t a = 0;
+        while(1)
+        {
+            if(!_has_master_key()) if(!ram_write_byte_safe(store_addr, data[a], key))
+            {
+                console_write_f(PSTR("Permission denied\n"));
+                return;
+            }
+            if(_has_master_key()) ram_write_byte(store_addr + a, data[a]);
+            if(data[a] == '\0' || data[a] == 0xff || a >= EEPROM_SLOT_SIZE) break;
+            a++;
+        }
+    }
+    return;
+
+}
+
+static void _cmd_fat_entry_to_ram(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("get-to-ram : usage -> get-to-ram <ram address> <entry number>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint16_t entry = strtoul((const char *)argv[2], NULL, 0);
+    uint8_t file_data[32];
+
+    console_write_f(PSTR("Got address : "));
+    console_number_f(addr, 16, NULL, PSTR(", entry : "));
+    console_number_f(entry, 10, NULL, PSTR_NEWLINE);
+
+    if(!FAT_rapair_get_entry(entry, file_data))
+    {
+        console_write_f(PSTR("File entry read failed, exit code : "));
+        console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE);
+        return;
+    }
+
+    ram_write(addr, file_data, 32);
+
+    // Summary line
+    console_write_f(PSTR("Done...\n"));
+}
+
+static void _cmd_mem_copy(uint8_t argc, uint8_t *argv[])
+{
+    if(argc < 4)
+    {
+        console_write_f(PSTR("memcpy : usage -> memcpy <from> <to> bytes\n"));
+        return;
+    }
+
+    uint32_t from  = strtoul((const char *)argv[1], NULL, 0);
+    uint32_t to  = strtoul((const char *)argv[2], NULL, 0);
+    uint32_t bytes  = strtoul((const char *)argv[3], NULL, 0);
+
+    uint8_t key = 0;
+
+    if(argc == 5)
+    {
+        if(argv[3][0] != '-' || argv[3][1] != 'k')
+        {
+            console_write_f(PSTR("store : argument error\n"));
+            return;
+        }
+        key = strtoul((const char *)argv[4], NULL, 0);
+    }
+
+    if((uint8_t)(to >> 24) != 0x80 && (uint8_t)(to >> 24) != 0x00) {
+        console_write_f(PSTR("store : flash space write forbidden\n"));
+        return;
+    }
+
+    uint8_t data = 0;
+    uint8_t from_add_chk = (uint8_t)(from >> 24);
+    uint8_t to_add_chk = (uint8_t)(to >> 24);
+
+    for(uint32_t a = 0; a < bytes; a++)
+    {
+        if(from_add_chk == 0x80) data = ram_read_byte(from + a);
+        if(from_add_chk == 0x40) data = eeprom_read_byte((uint16_t)(from + a));
+        if(from_add_chk == 0x20) data = pgm_read_byte((from + a) & 0xffffff);
+        if(from_add_chk == 0x00) data = mcu_memory_read((uint16_t)(from + a));
+        if(_has_master_key())
+        {
+            if(to_add_chk == 0x80) ram_write_byte(to + a, data);
+            if(to_add_chk == 0x40) eeprom_write_byte((uint16_t)(to + a), data);
+            if(to_add_chk == 0x00) mcu_memory_store((uint16_t)(to + a), data);
+        }
+        if(!_has_master_key())
+        {
+            if(!ram_write_byte_safe(to + a, data, key))
+            {
+                console_write_f(PSTR("store : permission denied\n"));
+                return;
+            }
+        }
+    }
+}
+
+static void _cmd_mem_fill(uint8_t argc, uint8_t *argv[])
+{
+    if(argc < 4)
+    {
+        console_write_f(PSTR("memfill : usage -> memfill <addr> <data> bytes\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint8_t data  = strtoul((const char *)argv[2], NULL, 0);
+    uint32_t bytes  = strtoul((const char *)argv[3], NULL, 0);
+
+    uint8_t key = 0;
+
+    if(argc == 5)
+    {
+        if(argv[3][0] != '-' || argv[3][1] != 'k')
+        {
+            console_write_f(PSTR("store : argument error\n"));
+            return;
+        }
+        key = strtoul((const char *)argv[4], NULL, 0);
+    }
+
+    for(uint32_t a = 0; a < bytes; a++)
+    {
+        if(_has_master_key()) ram_write_byte(addr + a, data);
+        if(!_has_master_key())
+        {
+            if(!ram_write_byte_safe(addr + a, data, key))
+            {
+                console_write_f(PSTR("store : permission denied\n"));
+                return;
+            }
+        }
+    }
+}
+
+static void _cmd_fat_ram_to_sd(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 3) {
+        console_write_f(PSTR("ram-to-fat : usage -> ram-to-fat <ram address> <entry number>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint16_t entry = strtoul((const char *)argv[2], NULL, 0);
+    uint8_t file_data[32];
+
+    console_write_f(PSTR("Got address : "));
+    console_number_f(addr, 16, NULL, PSTR(", entry : "));
+    console_number_f(entry, 10, NULL, PSTR_NEWLINE);
+
+    ram_read(addr, file_data, 32);
+
+    if(!FAT_rapair_write_entry(entry, file_data))
+    {
+        console_write_f(PSTR("File entry write failed, exit code : "));
+        console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE);
+        return;
+    }
+
+    // Summary line
+    console_write_f(PSTR("Done...\n"));
+}
+
+static void _cmd_fat_dir_to_ram(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 2) {
+        console_write_f(PSTR("load-dir : usage -> load-dir <ram address>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint16_t entry = 0;
+
+
+    uint8_t file_data[32];
+
+    console_write_f(PSTR("Got address : 0x"));
+    console_number_f(addr, 16, NULL, PSTR_NEWLINE);
+
+    while(1)
+    {
+        if(!FAT_rapair_get_entry(entry++, file_data))
+        {
+            if(FAT_error_log == FAT_ERR_FILE_NOT_FOUND)
+            {
+                console_write_f(PSTR("Directory entry count : "));
+                console_number_f(entry, 10, NULL, PSTR(", size : "));
+                console_number_f(entry * 32, 10, NULL, PSTR(" bytes\n"));
+                for(uint8_t a = 0; a < 32; a++) ram_write_byte(addr, 0); // Last entry ensure empty
+                return;
+            }
+            console_write_f(PSTR("File entry read failed, exit code : "));
+            console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE);
+            return;
+        }
+        
+        ram_write(addr, file_data, 32);
+        addr += 32;
+
+        if(entry == 512) { console_write_f(PSTR("Overflow\n")); return; }
+    }
+    
+    return;
+}
+
+static void _cmd_fat_ram_to_dir(uint8_t argc, uint8_t *argv[])
+{
+    if (argc < 2) {
+        console_write_f(PSTR("restore-dir : usage -> restore-dir <ram address>\n"));
+        return;
+    }
+
+    uint32_t addr  = strtoul((const char *)argv[1], NULL, 0);
+    uint16_t entry = 0;
+
+
+    uint8_t file_data[32];
+
+    console_write_f(PSTR("Got address : 0x"));
+    console_number_f(addr, 16, NULL, PSTR_NEWLINE);
+
+    while(1)
+    {
+        ram_read(addr, file_data, 32);
+        if(!FAT_rapair_write_entry(entry++, file_data))
+        {
+            console_write_f(PSTR("File entry write failed, exit code : "));
+            console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE);
+            return;
+        }
+        if(file_data[0] == 0)
+        {
+            console_write_f(PSTR("Directory entry count : "));
+            console_number_f(entry, 10, NULL, PSTR(", size : "));
+            console_number_f(entry * 32, 10, NULL, PSTR(" bytes\n"));
+            return; 
+        }
+        addr += 32;
+        if(entry == 512) { console_write_f(PSTR("Overflow\n")); return; }
+    }
+    
+    return;
+}
+
+static void _cmd_fat_show_cluster(uint8_t argc, uint8_t *argv[])
+{
+    (void)argc; (void)argv;
+
+    console_write_f(PSTR("Directory  : "));
+    console_number_f(FAT_repair_get_actual_dir_cluster(), 16, NULL, PSTR_NEWLINE);
+    console_write_f(PSTR("Parent dir : "));
+    console_number_f(FAT_get_parent_dir_cluster(), 16, NULL, PSTR_NEWLINE);
+}
+
+static void _cmd_fat_data(uint8_t argc, uint8_t *argv[])
+{
+    if(argc < 3 || argv[1][0] != '-' || (argv[1][1] != 'r' && argv[1][1] != 's') || argv[1][2] != 0)
+    {
+        console_write_f(PSTR("fatdata : usage -> fatdata -r <ram address> or -s <entry number>\n"));
+        return;
+    }
+
+    uint8_t data[32];
+
+    if(argv[1][1] == 'r') // Load data from ram address
+    {
+        uint32_t addr  = strtoul((const char *)argv[2], NULL, 0);
+        console_write_f(PSTR("Got address : 0x"));
+        console_number_f(addr, 16, NULL, PSTR_NEWLINE);
+        ram_read(addr, data, 32);
+    }
+
+    if(argv[1][1] == 's') // Load data from sd card fat
+    {
+        uint16_t entry  = strtoul((const char *)argv[2], NULL, 0);
+        console_write_f(PSTR("Got entry : "));
+        console_number_f(entry, 10, NULL, PSTR_NEWLINE);
+        if(!FAT_rapair_get_entry(entry, data))
+        {
+            if(FAT_error_log == FAT_ERR_FILE_NOT_FOUND)
+            {
+                console_write_f(PSTR("Directory not found\n"));
+                return;
+            }
+            console_write_f(PSTR("File entry read failed, exit code : "));
+            console_number_f(FAT_error_log, 10, NULL, PSTR_NEWLINE);
+            return;
+        }
+    }
+
+    uint8_t dir_name[13];
+    uint16_t b16 = 0;
+    uint32_t b32 = 0;
+    memcpy(dir_name, data, 11);
+    dir_name[11] = '\n';
+    dir_name[12] = '\0';
+    console_write_f(PSTR("    Name : "));
+    console_write_d(dir_name);
+    console_write_f(PSTR("    Attr : 0x"));
+    console_number_f(data[11], 16, NULL, PSTR_NEWLINE);
+    console_write_f(PSTR("  NT res : "));
+    console_number_f(data[12], 10, NULL, PSTR_NEWLINE);
+    console_write_f(PSTR("  Time t : "));
+    console_number_f(data[13], 10, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[15] << 8 | data[14];
+    console_write_f(PSTR("Cr. Time : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[17] << 8 | data[16];
+    console_write_f(PSTR("Cr. Date : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[19] << 8 | data[18];
+    console_write_f(PSTR("Ac. Date : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[21] << 8 | data[20];
+    console_write_f(PSTR("F. Clu H : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[23] << 8 | data[22];
+    console_write_f(PSTR("Md. Time : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[25] << 8 | data[24];
+    console_write_f(PSTR("Md. Date : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b16 = (uint16_t)data[27] << 8 | data[26];
+    console_write_f(PSTR("F. Clu L : "));
+    console_number_f(b16, 16, NULL, PSTR_NEWLINE);
+    b32 = (uint32_t)data[31] << 24 | (uint32_t)data[30] << 16 | (uint32_t)data[29] << 8 | (uint32_t)data[28];
+    console_write_f(PSTR("    Size : "));
+    console_number_f(b32, 16, NULL, PSTR_NEWLINE);
+}
+
  static const char PSTR_MEM1[]      PROGMEM = "               Checking MCU RAM : ";
  static const char PSTR_MEM2[]      PROGMEM = "   Checking external serial RAM : ";
  static const char PSTR_MEM3[]      PROGMEM = "               Checking SD card :";
  static const char PSTR_MEM13[]     PROGMEM = "                          Total : ";
  static const char PSTR_MEM4[]      PROGMEM = "SD card root volume information : ";
- static const char PSTR_MEM5[]      PROGMEM = " bytes free\n"; // not used
- static const char PSTR_MEM6[]      PROGMEM = " 128 KB\n"; // not used
- static const char PSTR_MEM7[]      PROGMEM = " 256 KB\n"; // not used
- static const char PSTR_MEM8[]      PROGMEM = " 384 KB\n"; // not used
  static const char PSTR_MEM9[]      PROGMEM = "slot ";
  static const char PSTR_MEM10[]     PROGMEM = " detected\n";
  static const char PSTR_MEM11[]     PROGMEM = " not";
@@ -1584,7 +3154,7 @@
 	// MCU RAM
     console_write_f(PSTR_MEM1);
     uint8_t out[16];
-    console_number(free_mem, 10, NULL, " Bytes free\n");
+    console_number_f(free_mem, 10, NULL, PSTR(" Bytes free\n"));
     
     free_mem = 384;
     // External Serial RAM
@@ -1604,7 +3174,7 @@
     if(!(ram_status & 0x04)) { console_write_f(PSTR_MEM11); free_mem -= 128; }
     console_write_f(PSTR_MEM10);
     console_write_f(PSTR_MEM13);
-    console_number(free_mem, 10, NULL, " KB\n");
+    console_number_f(free_mem, 10, NULL, PSTR(" KB\n"));
 
     // SD card
     console_write_f(PSTR_MEM3);
@@ -1631,8 +3201,7 @@
 	}
 	// MCU RAM
     console_write_f(PSTR_MEM1);
-    uint8_t out[16];
-    console_number(free_mem, 10, NULL, " Bytes free\n");
+    console_number_f(free_mem, 10, NULL, PSTR(" Bytes free\n"));
     
     free_mem = 384;
     // External Serial RAM
@@ -1652,18 +3221,39 @@
     if(!(ram_status & 0x04)) { console_write_f(PSTR_MEM11); free_mem -= 128; }
     console_write_f(PSTR_MEM10);
     console_write_f(PSTR_MEM13);
-    console_number(free_mem, 10, NULL, " KB\n");
+    console_number_f(free_mem, 10, NULL, PSTR(" KB\n"));
 
     // RAM allocation check
     console_write_f(PSTR("External RAM allocation table\n"));
     for(uint8_t a = 0; a < MAX_SLOTS; a++)
     {
         console_write_f(PSTR("  slot["));
-        console_number(a, 10, NULL, "] addr : 0x");
-        console_number(ram_slot_addr[a], 16, NULL, " size : ");
-        console_number(ram_slot_size[a], 10, NULL, " bytes\n");
+        console_number_f(a, 10, NULL, PSTR("] addr : 0x"));
+        console_number_f(get_ram_slot_addr(a), 16, NULL, PSTR(" size : "));
+        console_number_f(get_ram_slot_size(a), 10, NULL, PSTR(" bytes key : 0x"));
+        console_number_f(get_ram_slot_key(a), 16, NULL, PSTR_NEWLINE);
     }
  }
+
+ static void _cmd_sd_stat(uint8_t argc, uint8_t *argv[])
+ {
+    (void)argc; (void)argv;
+    uint8_t out[16];
+    console_write_f(PSTR_MEM3);
+    if(!SD_check_alive()) console_write_f(PSTR_MEM11); 
+    console_write_f(PSTR_MEM10);
+    console_write_f(PSTR_MEM4);
+    FAT_get_volume_id(out);
+    out[11] = '\n';
+    out[12] = '\0';
+    console_write_d(out);
+    console_write_f(PSTR("SD card total size : "));
+    console_number_f(FAT_get_total_memory(), 10, NULL, PSTR(" Bytes\n"));
+    console_write_f(PSTR("SD card free space : "));
+    console_number_f(FAT_get_free_memory(), 10, NULL, PSTR(" Bytes\n"));
+ }
+
+ 
 
 
  
@@ -1697,12 +3287,18 @@
       * Reserve the last slot of the output buffer region as the pending line
       * buffer.  Effective usable line slots = (buffer_size / line_size) - 1.
       */
-     lcd_write_debug("Loading...");
-     ram_init();
-     ram_test();
+     lcd_write_debug((uint8_t *)"Loading...");
+     if(!ram_init()) return;
 
+     console_back_color = _get_setting(1);
+     console_text_color = _get_setting(2);
+     console_prompt_color = _get_setting(3);
+     console_ram_buffer_size = _get_setting(4);
+     console_char_size = _get_setting(5);
+     console_ram_scroll_delete = _get_setting(6);
+     
      console_ram_start_addr = ram_allocate(console_ram_buffer_size);
-     if(!console_ram_start_addr) { lcd_write_debug("Console buffer allocation error"); return; }
+     if(!console_ram_start_addr) { lcd_write_debug((uint8_t *)"RAM error"); _delay_ms(1000); return; }
 
      _pending_slot_addr  = console_ram_start_addr
                          + console_ram_buffer_size
@@ -1730,24 +3326,45 @@
      
      console_active  = 1;
      console_visible = 1;
- 
+
      /* ── Welcome banner ───────────────────────────────────────────────── */
-     console_write_f(PSTR_WELCOME1);
-     console_write_f(PSTR_WELCOME2);
-     console_write_f(PSTR_WELCOME3);
-     console_write_f(PSTR_WELCOME4);
-     console_write_f(PSTR_WELCOME5);
-     console_write_f(PSTR_WELCOME6);
-     console_write_f(PSTR_WELCOME7);
-     console_write_f(PSTR_WELCOME8);
+     console_write_f(PSTR("########################################\n"));
+     console_write_f(PSTR("#                                      #\n"));
+     console_write_f(PSTR("#      WISH [ Wizard Shell ] v1.0      #\n"));
+     console_write_f(PSTR("#                                      #\n"));
+     console_write_f(PSTR("########################################\n"));
+     console_write_f(PSTR_NEWLINE);
+     console_write_f(PSTR("Atmel ATxmega128A3U @ 32 Mhz\n"));
+     console_write_f(PSTR_NEWLINE);
+
+     console_redraw();
 
      _cmd_mem_check(0, NULL);
 
-     console_write_f(PSTR_WELCOME13);
-     console_write_f(PSTR_WELCOME14);
- 
-     /* ── First draw ───────────────────────────────────────────────────── */
-     //wish_redraw();
+     if(FAT_load_directory("man"))
+     {
+        console_write_f(PSTR("Loading man files... "));
+        man_directory_cluster = FAT_working_dir_cluster;
+        FAT_unload_directory();
+        console_write_f(PSTR("done\n"));
+     }
+     if(FAT_load_directory("conf"))
+     {
+        console_write_f(PSTR("Loading config files... "));
+        conf_directory_cluster = FAT_working_dir_cluster;
+        FAT_unload_directory();
+        console_write_f(PSTR("done\n"));
+     }
+
+     if(!conf_directory_cluster) console_write_f(PSTR("Conf not found make <conf> dir...\n"));
+     if(!man_directory_cluster) console_write_f(PSTR("Man pages not found make <man> dir...\n"));
+
+     //_get_setting_from_file(PSTR("console"), PSTR("console-text-color"), (void *)&console_text_color);
+
+     console_write_f(PSTR_NEWLINE);
+     console_write_f(PSTR("Done...\n"));
+
+     console_redraw();
  }
  
  /* =========================================================================

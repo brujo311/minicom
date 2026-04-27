@@ -138,6 +138,13 @@
   */
 
  void console_number(uint32_t number, uint8_t base, uint8_t * prefix, uint8_t * sufix);
+ void console_number_f(uint32_t number, uint8_t base, const char * prefix, const char * sufix);
+
+ void console_redraw();
+
+ void _process_command(uint8_t *line);
+
+ void _print_f(const char *fmt, ...);
  
  void wish_set_prompt(uint8_t *cwd);
  

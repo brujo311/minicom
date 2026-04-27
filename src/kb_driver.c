@@ -1,6 +1,9 @@
 
+#define F_CPU 32000000UL // CPU frequency in Hz (32MHz)
 
 #include <avr/io.h>
+#include <util/delay.h>
+#include "kb_driver.h"
 
 /*
  * TWI (I2C) driver for ATxmega128A3U — TWIC, 32 MHz, ~100 kHz
@@ -33,6 +36,8 @@ void twi_init(void)
      * External pull-up resistors are required on both lines.
      * PORTC pins default to input — just configure wired-and output for the TWI
      * peripheral to drive them low. */
+
+    twi_recover_bus();
      
     //PORTC.PIN0CTRL = PORT_OPC_WIREDAND_gc;
     //PORTC.PIN1CTRL = PORT_OPC_WIREDAND_gc;
@@ -47,6 +52,42 @@ void twi_init(void)
 
     /* Force bus state to IDLE so the master can initiate transfers */
     TWIC.MASTER.STATUS = TWI_MASTER_BUSSTATE_IDLE_gc;
+}
+
+void twi_recover_bus(void)
+{
+    // 1. Disable TWI
+    TWIC.MASTER.CTRLA = 0;
+
+    // 2. Configure pins manually
+    PORTC.DIRSET = PIN0_bm;   // SCL output
+    PORTC.DIRCLR = PIN1_bm;   // SDA input
+
+    PORTC.OUTSET = PIN0_bm;   // SCL high
+
+    // 3. Clock out stuck slave (9 pulses)
+    for (uint8_t i = 0; i < 9; i++)
+    {
+        PORTC.OUTCLR = PIN0_bm;
+        _delay_us(5);
+        PORTC.OUTSET = PIN0_bm;
+        _delay_us(5);
+    }
+
+    // 4. Generate STOP condition
+    PORTC.DIRSET = PIN1_bm;   // SDA output
+
+    PORTC.OUTCLR = PIN1_bm;   // SDA low
+    _delay_us(5);
+
+    PORTC.OUTSET = PIN0_bm;   // SCL high
+    _delay_us(5);
+
+    PORTC.OUTSET = PIN1_bm;   // SDA high
+    _delay_us(5);
+
+    // 5. Restore pins to TWI control
+    PORTC.DIRCLR = PIN0_bm | PIN1_bm;
 }
 
 /*

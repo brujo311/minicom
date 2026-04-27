@@ -35,7 +35,70 @@ static inline uint8_t sd_spi_transfer(uint8_t data)
     return r;
 }
 
+static uint8_t SD_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc)
+{
+    uint8_t response;
+    uint8_t retry = 0;
 
+    SD_CS_ASSERT;
+
+    sd_spi_transfer(0xFF); // Ncr
+
+    sd_spi_transfer(cmd | 0x40);
+    sd_spi_transfer(arg >> 24);
+    sd_spi_transfer(arg >> 16);
+    sd_spi_transfer(arg >> 8);
+    sd_spi_transfer(arg);
+    sd_spi_transfer(crc);
+
+    do {
+        response = sd_spi_transfer(0xFF);
+    } while ((response & 0x80) && (++retry < 100));
+
+    return response;
+}
+
+static void SD_cmd_end(void)
+{
+    SD_CS_DEASSERT;
+    sd_spi_transfer(0xFF);
+}
+
+static uint8_t SD_read_CID(uint8_t * cid)
+{
+    uint8_t r;
+    uint8_t i;
+
+    SPI_SD_SET;
+    r = SD_send_cmd(READ_CID, 0, 0xFF);
+    if (r != 0x00)
+    {
+        SD_cmd_end();
+        SPI_MAX_SET; 
+        return 0;
+    }
+
+    // Wait for data token 0xFE
+    i = 0;
+    do {
+        r = sd_spi_transfer(0xFF);
+        if (++i > 200) { SD_cmd_end(); SPI_MAX_SET; return 0; }
+    } while (r != 0xFE);
+
+    // Read 16 bytes CID
+    for (i = 0; i < 16; i++)
+        cid[i] = sd_spi_transfer(0xFF);
+
+    // 2 CRC bytes
+    sd_spi_transfer(0xFF);
+    sd_spi_transfer(0xFF);
+
+    sd_spi_transfer(0xFF);
+    SD_cmd_end();
+
+    SPI_MAX_SET; 
+    return 1;
+}
 
 uint8_t SD_check_alive()
 {
@@ -212,70 +275,9 @@ uint8_t SD_init(void)
     return 0;
 }
 
-static uint8_t SD_read_CID(uint8_t * cid)
-{
-    uint8_t r;
-    uint8_t i;
 
-    SPI_SD_SET;
-    r = SD_send_cmd(READ_CID, 0, 0xFF);
-    if (r != 0x00)
-    {
-        SD_cmd_end();
-        SPI_MAX_SET; 
-        return 0;
-    }
 
-    // Wait for data token 0xFE
-    i = 0;
-    do {
-        r = sd_spi_transfer(0xFF);
-        if (++i > 200) { SD_cmd_end(); SPI_MAX_SET; return 0; }
-    } while (r != 0xFE);
 
-    // Read 16 bytes CID
-    for (i = 0; i < 16; i++)
-        cid[i] = sd_spi_transfer(0xFF);
-
-    // 2 CRC bytes
-    sd_spi_transfer(0xFF);
-    sd_spi_transfer(0xFF);
-
-    sd_spi_transfer(0xFF);
-    SD_cmd_end();
-
-    SPI_MAX_SET; 
-    return 1;
-}
-
-static uint8_t SD_send_cmd(uint8_t cmd, uint32_t arg, uint8_t crc)
-{
-    uint8_t response;
-    uint8_t retry = 0;
-
-    SD_CS_ASSERT;
-
-    sd_spi_transfer(0xFF); // Ncr
-
-    sd_spi_transfer(cmd | 0x40);
-    sd_spi_transfer(arg >> 24);
-    sd_spi_transfer(arg >> 16);
-    sd_spi_transfer(arg >> 8);
-    sd_spi_transfer(arg);
-    sd_spi_transfer(crc);
-
-    do {
-        response = sd_spi_transfer(0xFF);
-    } while ((response & 0x80) && (++retry < 100));
-
-    return response;
-}
-
-static void SD_cmd_end(void)
-{
-    SD_CS_DEASSERT;
-    sd_spi_transfer(0xFF);
-}
 
 uint8_t SD_erase(uint32_t startBlock, uint32_t totalBlocks)
 {

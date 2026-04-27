@@ -1,15 +1,4 @@
-//********************************************************
-// **** ROUTINES FOR FAT32 IMPLEMATATION OF SD CARD *****
-//********************************************************
-//Controller: ATmega32 (Clock: 8 Mhz-internal)
-//Compiler	: AVR-GCC
-//Version 	: 2.2
-//Author	: CC Dharmani, Chennai (India)
-//			  www.dharmanitech.com
-//Date		: 15 July 2009
-//********************************************************
 
-//Link to the Post: http://www.dharmanitech.com/2009/01/sd-card-interfacing-with-atmega8-fat32.html
 
 //**************************************************
 // ***** HEADER FILE : FAT32.h ******
@@ -36,9 +25,19 @@
 #define FAT_ERR_DIR_FULL                17   // No empty directory slot and cluster expansion failed
 #define FAT_ERR_WRITE_FAILED            18   // SD_writeSingleBlock returned an error
 #define FAT_ERR_CLUSTER_CHAIN           19   // Unexpected end or corruption in cluster chain
+#define FAT_ERR_NAME_CONVERSION         20
+#define FAT_ERR_SD_WRITE                21
+#define FAT_ERR_DIR_NOT_EMPTY           22
+#define FAT_ERR_INVALID_NAME            23
+#define FAT_ERR_DENIED                  24
+#define FAT_ERR_DIR_NOT_FOUND           25
+#define FAT_ERR_SD_READ                 26
+#define FAT_DIRECTORY_CLUSTER_OVERWRITE 27
 #define FAT_OK                          0xaa
 #define FAT_EOF                         0xbb
 
+extern uint32_t FAT_working_dir_cluster;
+extern uint32_t FAT_working_dir_cluster_old;
 extern uint32_t FAT_file_position_index;
 extern uint32_t FAT_file_position_cluster;
 extern uint32_t FAT_file_position_sector;
@@ -166,36 +165,25 @@ extern unsigned char freeClusterCountUpdated;
 uint8_t FAT_get_volume_id(uint8_t *volume_id);
 uint8_t FAT_unload_directory(void);
 uint8_t FAT_load_directory(uint8_t *dirname); // One at a time
-uint8_t FAT_count_files_in_directory(uint8_t *dirname, uint16_t *count); // NULL for ROOT
+uint8_t FAT_count_files_in_directory(uint16_t *count); // directory should be loaded
 uint8_t FAT_open_file(uint8_t *fileName);
 void FAT_close_file();
 uint8_t FAT_get_file_name(uint16_t index, uint8_t *file_data); // Within loaded directory
 uint8_t FAT_read_specific_file_line(uint8_t *fileName, uint8_t *data, uint16_t line_index);
 uint8_t FAT_read_file_line(uint8_t *fileName, uint8_t *data);
 uint8_t FAT_read_bytes(uint8_t *fileName, uint8_t *data, uint16_t bytes);
-uint8_t convertFileName (uint8_t *fileName, uint8_t *fileNameFAT);
 uint8_t FAT_find_file(uint8_t *fileNameDirty, uint8_t *file_data);
 uint8_t FAT_create_file(uint8_t *fileName);
 uint8_t FAT_append_data(uint8_t *fileName, uint8_t *data, uint16_t byte_count);
+uint8_t FAT_delete_file(uint8_t *fileNameDirty);
+uint8_t FAT_create_dir(uint8_t *dirname);
+uint8_t FAT_delete_dir(uint8_t *dirname);
+uint32_t FAT_get_total_memory(void);
+uint32_t FAT_get_free_memory(void);
 
-//************* functions *************
-unsigned char getBootSectorData (void);
-unsigned long getFirstSector(unsigned long clusterNumber);
-unsigned long getSetFreeCluster(unsigned char totOrNext, unsigned char get_set, unsigned long FSEntry);
-//struct dir_Structure* findFiles (unsigned char flag, unsigned char *fileName);
-unsigned long getSetNextCluster (unsigned long clusterNumber,unsigned char get_set,unsigned long clusterEntry);
-//unsigned char readFile (unsigned char *fileName);
-uint16_t readFileData(unsigned char *fileName, uint8_t *data, unsigned char flag, uint16_t bytes);
-
-void writeFile (unsigned char *fileName, unsigned char *data);
-void appendFile (void);
-unsigned long searchNextFreeCluster (unsigned long startCluster);
-void memoryStatistics (void);
-void displayMemory (unsigned long memory);
-void deleteFile (unsigned char *fileName);
-void freeMemoryUpdate (unsigned char flag, unsigned long size);
-
-unsigned long findCluster(const char *directoryName);
-void findFilesInDirectory(uint8_t *directoryName);
+uint8_t FAT_rapair_get_entry(uint16_t entry, uint8_t *file_data);
+uint8_t FAT_rapair_write_entry(uint16_t entry, uint8_t *file_data);
+uint32_t FAT_repair_get_actual_dir_cluster();
+uint32_t FAT_get_parent_dir_cluster();
 
 #endif

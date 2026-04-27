@@ -2,6 +2,7 @@
 
 
 void twi_init(void);
+void twi_recover_bus(void);
 uint8_t twi_send_byte(uint8_t data);
 uint8_t twi_read_byte(void);
 uint8_t keyboard_init(void);

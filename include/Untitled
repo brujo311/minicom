@@ -1,2 +1,1 @@
- #define DARK_GRAY       0x4208
- #define LIGHT_GRAY      0xC618
+console_write_f(PSTR_NEWLINE);
